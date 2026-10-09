@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenCode Telegram Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/oc-gateway
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/ubuntu
+EnvironmentFile=-/home/ubuntu/oc-gateway/.env
+ExecStart=/usr/bin/python3 /home/ubuntu/oc-gateway/gateway.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

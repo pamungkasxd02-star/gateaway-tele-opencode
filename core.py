@@ -202,9 +202,12 @@ def load_cfg() -> dict:
             tel[key] = [s.strip() for s in os.environ[env].split(",")
                         if s.strip()]
     for key, env in (("cron_thread_id", "TELEGRAM_CRON_THREAD_ID"),
-                     ("notifications", "HERMES_TELEGRAM_NOTIFICATIONS")):
+                     ("notifications", "TELEGRAM_NOTIFICATIONS")):
         if os.environ.get(env):
             tel[key] = os.environ[env]
+    if os.environ.get("HERMES_TELEGRAM_NOTIFICATIONS") and \
+            "TELEGRAM_NOTIFICATIONS" not in os.environ:
+        tel["notifications"] = os.environ["HERMES_TELEGRAM_NOTIFICATIONS"]
     resolve_env_strings(cfg)
     tel["allowed_users"] = _id_list(tel["allowed_users"])
     tel["allowed_chats"] = _id_list(tel["allowed_chats"])

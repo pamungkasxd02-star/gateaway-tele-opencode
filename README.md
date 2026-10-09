@@ -1,205 +1,203 @@
-# OpenCode <-> Telegram Gateway (Hermes-style)
+# gateaway-tele-opencode
 
-Jembatan mirip **Hermes gateway**: chat dari Telegram (DM / group / forum topic)
-dijalankan sebagai prompt **OpenCode** di VPS ini, hasilnya dibalas ke Telegram.
+Bot Telegram yang menjalankan [OpenCode](https://opencode.ai) di VPS.
+Chat dari Telegram (DM / grup / forum topic) dieksekusi sebagai prompt
+OpenCode di server ini, hasilnya dibalas ke Telegram.
 
 ```
-Telegram ──polling──► gateway.py ──► opencode run --standalone ──► reply ke Telegram
+Telegram ──polling──► gateway.py ──HTTP──► opencode serve (privat :4097)
 ```
 
-## Fitur (Hermes-parity)
+## Kebutuhan
 
-| Fitur | Status |
-|---|---|
-| Long polling / webhook mode | ✅ |
-| Sesi terisolasi per chat & per topic | ✅ |
-| Group chat + require_mention / mention_patterns | ✅ |
-| Voice, audio, foto, dokumen → diteruskan ke agent | ✅ |
-| Kirim file balik via tag `MEDIA:/path` | ✅ |
-| Footer metadata (model, sesi, durasi) | ✅ |
-| Command menu (`setMyCommands`) + indikator Online/Offline | ✅ |
-| Multi-profile routing (chat/thread → workspace/model) | ✅ |
-| Concurrency pool, dedup update, timeout + kill | ✅ |
-| `/proxy on|off` + `/rotate` (ganti IP WARP) | ✅ |
-| Cron / scheduled tasks | ✅ `/cron add/list/rm/on/off` → hasil ke home channel |
-| Approval `/approve` `/deny` | ✅ regex berbahaya + permission API OpenCode |
+- VPS Ubuntu/Debian (atau distro dengan systemd), akses sudo
+- Python 3.10+ (stdlib saja, tanpa dependency pip) + `curl`
+- OpenCode CLI v2 terpasang (`opencode --version` jalan) dan provider
+  sudah login (`opencode auth list` — tanpa ini agent tidak bisa jawab)
+- `git` (untuk clone repo ini)
+- Akun Telegram
 
-## Setup (harus lu lakukan sendiri — 3 langkah)
+Opsional:
 
-### 1. Bikin bot
-Chat [@BotFather](https://t.me/BotFather) → `/newbot` → ikuti instruksi → simpan **token**.
+- `warp-cli` (Cloudflare WARP) — untuk `/proxy` dan `/rotate`
+- Salah satu untuk transkrip voice note: CLI `whisper`, atau
+  `GROQ_API_KEY`, atau `OPENAI_API_KEY`. Tanpa ketiganya, audio
+  diteruskan apa adanya sebagai file.
 
-Opsional tapi disarankan:
-- `/setdescription` dan `/setabouttext`
-- `/setcommands` (boleh dilewati, gateway yang daftarkan otomatis)
-- Kalau mau dipakai di **group**: Bot Settings → *Group Privacy* → **Turn off**
-  (lalu **keluar & masuk ulang** bot ke grupnya)
+## Instal dari nol
 
-### 2. Cari User ID Telegram
-Chat [@userinfobot](https://t.me/userinfobot) → dia balas angka user ID lu.
-
-### 3. Isi `.env` (token & ID, ala Hermes: rahasia di `.env`, config polos)
 ```bash
-cp /home/ubuntu/oc-gateway/.env.example /home/ubuntu/oc-gateway/.env
-nano /home/ubuntu/oc-gateway/.env
-chmod 600 /home/ubuntu/oc-gateway/.env
+# 1. clone
+git clone https://github.com/pamungkasxd02-star/gateaway-tele-opencode
+cd gateaway-tele-opencode
+
+# 2. isi rahasia (jangan commit file ini)
+cp .env.example .env
+nano .env
+chmod 600 .env
 ```
-Isi minimal:
+
+Isi minimal `.env`:
+
 ```bash
 TELEGRAM_BOT_TOKEN=123456789:ABC...
 TELEGRAM_ALLOWED_USERS=123456789
 ```
-Opsional: `TELEGRAM_HOME_CHANNEL`, `TELEGRAM_GROUP_ALLOWED_CHATS`,
-`TELEGRAM_GROUP_ALLOWED_USERS` (grup saja, tanpa DM),
-`TELEGRAM_CRON_THREAD_ID`, `GROQ_API_KEY` / `OPENAI_API_KEY` (STT),
-`HERMES_TELEGRAM_NOTIFICATIONS=all`. Service systemd memuat `.env`
-otomatis via `EnvironmentFile`; jalan manual (`python3 gateway.py`) ikut
-kebaca lewat loader built-in. `config.json` tidak lagi menyimpan rahasia
-(token di sana cukup `${TELEGRAM_BOT_TOKEN}`).
 
-## Menjalankan
+Token didapat dari [@BotFather](https://t.me/BotFather) (`/newbot`).
+User ID didapat dari [@userinfobot](https://t.me/userinfobot).
+Opsional di `.env`: `TELEGRAM_HOME_CHANNEL`,
+`TELEGRAM_GROUP_ALLOWED_CHATS`, `TELEGRAM_GROUP_ALLOWED_USERS`,
+`TELEGRAM_CRON_THREAD_ID`, `TELEGRAM_NOTIFICATIONS=all`,
+`GROQ_API_KEY`, `OPENAI_API_KEY`.
 
 ```bash
-# hidupkan service
+# 3. pasang service
+sudo cp oc-telegram.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now oc-telegram
 sudo systemctl status oc-telegram
 
-# log
-tail -f /home/ubuntu/oc-gateway/gateway.log
+# 4. cek log + tes
+tail -f gateway.log
 ```
 
-Test: kirim pesan ke bot di Telegram → balasan datang dalam beberapa detik.
+Isi `oc-telegram.service` (sudah termasuk di repo):
 
-**Tombol cepat permanen**: kirim `/start` (atau `/keyboard`) → keyboard
-`🆕 New · 📊 Status · 🧠 Model · ⏰ Cron · 🌐 Proxy · ❓ Help` muncul di
-atas kolom chat dan nempel terus. Tap = langsung jalan, tanpa ketik slash.
-Bedanya dengan `/menu`: `/menu` itu tombol inline di dalam bubble (hilang
-kalau chat jalan), keyboard ini permanen.
+```ini
+[Unit]
+Description=OpenCode Telegram Gateway
+After=network-online.target
+Wants=network-online.target
 
-## Command Telegram (Hermes-parity)
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/oc-gateway
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=/home/ubuntu
+EnvironmentFile=-/home/ubuntu/oc-gateway/.env
+ExecStart=/usr/bin/python3 /home/ubuntu/oc-gateway/gateway.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Sesuaikan `User=` dan path dengan mesinmu. Tes: kirim pesan ke bot.
+
+Catatan grup: Bot Settings → *Group Privacy* → **Turn off** di BotFather,
+lalu keluarkan dan masukkan ulang bot ke grup, dan isi
+`TELEGRAM_GROUP_ALLOWED_CHATS`.
+
+## Cara kerja balasan
+
+Setiap pesan user memicu satu turn agent. Selama turn berjalan ada dua
+bubble:
+
+- **Bubble progres** (pesan terpisah, senyap): baris per tool call
+  (`💻 Running "date +%Y"`), selesai ditandai, call terminal tampil
+  sebagai blok code.
+- **Bubble jawaban**: mulai dari `💭 Thinking…`, diedit mengikuti teks
+  yang mengalir, selalu me-reply pesan pemicu. Hasil akhir di-render
+  sebagai HTML Telegram (bold/italic/code/link/quote/tabel) + footer
+  `model · %konteks · ~/cwd · durasi`.
+
+Aturan lain:
+
+- Pesan beruntun (jeda < 4 detik, `batching.hold_sec`) digabung jadi
+  satu turn.
+- Balasan > 3800 karakter dibagi halaman bersufiks `(1/3)`.
+- Jawaban persis `[SILENT]`/`NO_REPLY`/sejenis tidak dikirim (automation).
+- Prompt berbahaya memunculkan kartu approval (tombol ✅/❌ atau
+  `/approve` · `/deny`).
+- Notifikasi progres dimatikan default (`important`); `all` untuk
+  bunyikan semua.
+- Flood 429: tunggu `retry_after` lalu retry sekali.
+- `/restart` menunggu turn aktif selesai (maks 150 detik) lalu kirim
+  konfirmasi sesudah boot.
+
+## Command
 
 | Command | Fungsi |
 |---|---|
 | `/help` | daftar semua command |
-| `/new` · `/reset` | percakapan baru |
-| `/retry` | jalankan ulang pesan terakhir |
-| `/undo` | hapus pertukaran terakhir |
-| `/compress` | padatkan konteks percakapan |
-| `/title [name]` | set judul sesi |
-| `/resume [name]` | lanjutkan sesi bernama |
-| `/sessions [search <q>]` | daftar/cari sesi (+ tombol pilih) |
-| `/stop` | batalkan proses yang jalan |
-| `/bg <prompt>` | jalankan di background, hasilnya dikirim lagi ke chat |
-| `/btw <question>` | pertanyaan sampingan (sesi terpisah) |
-| `/model [provider:model]` | lihat/ganti model |
-| `/models` · `/agents` · `/agent [name]` | daftar + tombol pilih |
-| `/personality [name]` | persona (dari config `personalities`) |
-| `/reasoning on\|off` | tampilkan/sembunyikan reasoning |
-| `/status` | info sesi (kv block) |
-| `/usage` | token usage sesi ini |
-| `/insights` | statistik opencode |
-| `/whoami` | user/chat/akses |
-| `/mcp` · `/auth` · `/plugins` · `/update` | mirror CLI opencode |
-| `/approve` · `/deny` | approval buat prompt berbahaya (gateway deteksi `rm -rf`, `mkfs`, dll) |
-| `/sethome` · `/platforms` (= `/platform`) | manajemen gateway |
-| `/proxy on\|off` · `/rotate` · `/limits` | WARP (IP keluar agent) + status limit |
-| `/cron list` · `/cron add <expr> <prompt>` · `/cron rm/on/off <id>` | scheduled task ala Hermes |
-| `/goal teks` · `/goal status|pause|resume|clear` · `/subgoal` | standing goal Ralph-loop |
-| `/loop 5m ... [--times N]` · `/heartbeat every 5m ...` | prompt berulang sesi/idle |
-| `/queue` · `/steer` · `/branch` · `/plan` · `/context` · `/config` · `/egress` | antre/arah/cabang/rencana/konteks |
-| `/menu` | menu tombol interaktif |
+| `/start` | bantuan + tampilkan tombol cepat |
 | `/keyboard` | tampilkan tombol cepat permanen |
-| `/restart` | restart gateway |
-| `/<skill-name>` | command tak dikenal → diteruskan ke agent sebagai skill |
+| `/menu` | tombol inline (Models/Sessions/Agents/Status/Cron/Limits/Stats/MCP/Help) |
+| `/new` · `/reset` | percakapan baru (sesi chat ini saja) |
+| `/retry` | jalankan ulang pesan terakhir |
+| `/undo` | batalkan exchange terakhir |
+| `/compress` · `/compact` | padatkan konteks |
+| `/title [nama]` · `/rename` | judul sesi |
+| `/resume [nama]` | lanjutkan sesi bernama |
+| `/sessions` · `/session id` | daftar / pindah sesi |
+| `/stop` | hentikan turn yang jalan |
+| `/bg <prompt>` | jalan di background, hasil dikirim lagi |
+| `/btw <tanya>` | pertanyaan sampingan (sesi cabang, dihapus lagi) |
+| `/branch [nama]` | fork sesi, chat pindah ke cabang |
+| `/model [provider:model]` · `/models` | lihat/ganti model |
+| `/agents` · `/agent [nama]` | daftar/ganti agent |
+| `/personality [nama]` · `/reasoning on\|off` | persona / tampilkan reasoning |
+| `/status` · `/usage` · `/context` · `/whoami` | info sesi & token |
+| `/stats` · `/insights` | statistik opencode (sama) |
+| `/mcp` · `/auth` · `/plugins` · `/update` | mirror CLI opencode |
+| `/commands` · `/run <nama>` · `/skills` | command/skill OpenCode |
+| `/diff` · `/export` | diff sesi / unduh sesi sebagai file |
+| `/init` · `/review [target]` | setup AGENTS.md / review perubahan |
+| `/goal <teks>` | standing goal: dikerjakan berputar sampai done |
+| `/goal status\|pause\|resume\|clear` · `/subgoal ...` | kelola goal |
+| `/loop 5m ... [--times N]` · `/loop status\|stop id` | prompt berulang di sesi ini |
+| `/heartbeat every 5m ...` | prompt berkala, hanya saat idle |
+| `/queue <prompt>` | antre untuk giliran berikut |
+| `/steer <catatan>` | arahkan turn berikut |
+| `/plan <tugas>` | tulis rencana ke file, tanpa eksekusi |
+| `/cron add <expr> <prompt>` · `/cron list\|rm\|on\|off` | jadwal ke home channel |
+| `/proxy [on\|off]` · `/rotate` · `/limits` · `/egress` | WARP + rate limit |
+| `/sethome` · `/platforms` | home channel · status gateway |
+| `/approve` · `/deny` | setujui/tolak prompt berbahaya |
+| `/footer on\|off` · `/config` | footer balasan · lihat config |
+| `/restart` | restart gateway (graceful) |
+| `/<nama-skill>` | command tak dikenal → jalan sebagai skill agent |
 
-Expr cron: `10s|5m|2h|1d`, `every 30m`, `daily 07:00`, atau cron
-`m h dom mon dow` (mis. `*/15 * * * *`). Hasil dikirim ke home channel
-(`/sethome` dulu). Contoh: `/cron add 30m cek harga BTC lalu ringkas`.
+Format cron: `1m|30m|2h|1d` (min 1m), `every 30m`, `daily 07:00`,
+atau cron 5-field (`*/15 * * * *`). Butuh `/sethome` dulu supaya hasil
+cron ada tujuan. Contoh: `/cron add 30m cek harga BTC lalu ringkas`.
 
-**Proxy & limit full dari bot:**
-`/proxy` = status (switch, warp-cli, IP via proxy vs langsung);
-`/proxy on|off` + restart server; `/rotate` = ganti IP egress (lapor
-lama → baru, aman tanpa sudo); `/limits` = hit rate-limit per model +
-tips. Kena 429 saat turn → pesan error otomatis bawa saran
-`/rotate`·`/model`·`/limits`. Kuota tiap model terpisah.
+Contoh goal: `/goal perbaiki semua test sampai hijau` — judge menilai
+tiap turn (`DONE/CONTINUE/BLOCKED`), lanjut otomatis. Budget default 20
+turn (`goals.max_turns`). `/goal pause` kapan saja menghentikan loop.
 
-Voice note ditranskrip otomatis bila ada STT (whisper CLI, `GROQ_API_KEY`,
-atau `OPENAI_API_KEY`); kalau tidak ada, path audio diteruskan ke agent.
-**Foto/dokumen dilampirkan sebagai vision/file asli** (`files.uri`) —
-model yang support vision (terbukti: `muse-spark`, `mimo-v2.6-flash`)
-benar-benar MELIHAT gambar. Bila model menolak gambar, gateway otomatis
-retry sekali pakai `vision.fallback_model` (model/sesi kamu tak diubah);
-tanpa fallback, jawaban disertai saran `/model` yang support vision.
-Grup: `observe_unmentioned_group_messages: true` menyimpan chat biasa
-sebagai konteks tanpa menjalankan agent; `ignored_threads` +
-`exclusive_bot_mentions` + loop guard ala Hermes juga didukung.
-`group_allow_from` (`TELEGRAM_GROUP_ALLOWED_USERS`): sender yang boleh
-pakai bot **di grup saja** tanpa akses DM.
+## File & media
 
-Parity Hermes lain: **inline picker** (`inline_mode: true` + `/setinline`
-di BotFather, ketik `@bot <cari>`), **local Bot API**
-(`base_url`/`base_file_url`, limit file 20MB → 2GB), **notifikasi**
-(`important` senyap saat progres / `all`), **cron ke topic**
-(`cron_thread_id`), silence token `[SILENT]`/`NO_REPLY`.
-**Batching pesan masuk** (`batching.hold_sec`, default 4 dtk): pecahan
-pesan panjang yang dikirim beruntun digabung jadi SATU turn (reply nyantol
-ke pecahan pertama); `/new`·`/stop`·dkk membuang buffer. Preview streaming
-dipotong di batas paragraf + "…".
+Masuk: voice/audio ditranskrip bila ada STT, kalau tidak diteruskan
+sebagai file. Foto dan dokumen dilampirkan sebagai input vision/file
+asli ke model. Bila model menolak gambar, dicoba sekali pakai
+`vision.fallback_model` tanpa mengubah model/sesimu.
 
-## Tampilan balasan (gaya Hermes)
+Keluar: teks dulu, lalu lampiran. Agent melampirkan dengan tag
+`MEDIA:/path` (relatif ke workspace boleh), atau otomatis: file yang
+dibuat/diubah selama turn dan disebut di jawaban ikut terlampir
+(maks 5/turn, maks 48MB/file). Aturan untuk agent ada di
+`oc-workspace/AGENTS.md`.
 
-Sesi jalan → **dua bubble** persis Hermes:
+Grup: tanpa mention, bot diam (butuh `require_mention` + privacy OFF).
+`observe_unmentioned_group_messages: true` menyimpan obrolan biasa
+sebagai konteks tanpa menjalankan agent. `group_allow_from`
+(`TELEGRAM_GROUP_ALLOWED_USERS`) mengizinkan sender tertentu hanya di
+grup, tanpa akses DM. `ignored_threads` membisukan topic tertentu.
 
-- **Bubble progres** (pesan terpisah, senyap): tool terminal jadi header +
-  blok `<pre>` (header tak diulang untuk call berurutan), tool lain
-  single-line persis Hermes — pending `💻 bash...`, selesai
-  `💻 Running "date +%Y"`, `📖 Reading "src/x.py"`,
-  `🔍 Searching the web for "..."`, `🧩 skill: "pdf"`,
-  `🤖 Delegating "..."`, `📋 Updating tasks` (preview 40 char).
-- **Bubble jawaban**: preview `💭 Thinking…` (senyap) yang selalu
-  **reply ke pesanmu** (klik-reply, DM maupun grup — kayak bot Hermes),
-  streaming plain, final di-render **HTML Telegram** + footer,
-  **tanpa tool block** (tools sudah di bubble progres). Hasil `/bg` dan
-  approve juga nyantol ke pesan pemicu. Matikan via
-  `reply_to_trigger: false`.
-  Tabel → grup **heading + bullets** persis Hermes (`**Budi**` +
-  `• Umur: 20`); tabel dalam code fence dibiarkan; `||spoiler||`, link
-  berparens, code ber-tag bahasa didukung; gagal parse → fallback
-  plain; panjang → halaman bersufiks `(1/3)` dengan `<pre>` disambung
-  rapi; file `MEDIA:/path` setelah teks.
-- flood control 429: tunggu `retry_after` lalu retry sekali, tak ada pesan
-  ganda; `/footer on|off` toggle footer; `/reasoning on` tampilkan thinking
-  (blockquote) bila model memberinya
-- **Approval card**: prompt berbahaya memunculkan kartu + tombol
-  ✅ Approve / ❌ Deny (bisa juga via teks `/approve` · `/deny`)
-- Grup: pesan pemicu di-tag `[nick|id]`, konteks observasi ditandai
-  eksplisit sebagai konteks (bukan instruksi) ala Hermes
-- `/restart` → sesudah boot bot kirim "✅ Gateway restarted — sesi lanjut."
-  ke chat peminta (persis bot gateway lain). Restart **graceful**: turn
-  yang sedang jalan ditunggu sampai selesai (maks 150 dtk) supaya jawaban
-  tidak hilang di tengah jalan.
-
-Contoh footer:
-
-```
-ling-3.1-flash-free · 5% · ~/oc-workspace · 7s
-```
-
-- **Silence token**: kalau agent menjawab persis `[SILENT]`/`NO_REPLY`, gateway
-  sengaja tidak mengirim apa-apa (buat automation).
-- Voice/foto/file diteruskan ke agent (marker `[The user sent a ...]`), dan
-  agent bisa membalas file via tag `MEDIA:/path`.
-
-## Sesi & topic
-
-- DM biasa → 1 sesi per user.
-- Group dengan **Topics** aktif → tiap topic dapat sesi sendiri.
-- `/new` cuma mereset sesi di chat/topic itu.
+`/setinline` di BotFather + `inline_mode: true` mengaktifkan picker:
+ketik `@namabot <cari>` di chat mana pun untuk cari command/skill.
+`base_url`/`base_file_url` menunjuk ke server Bot API lokal (limit file
+20MB → 2GB).
 
 ## Multi-profile routing
 
-Routing beda chat ke workspace/model berbeda — edit `config.json`:
+Chat/thread berbeda bisa memakai workspace/model/timeout berbeda —
+edit `config.json`:
 
 ```json
 "gateway": {
@@ -216,110 +214,76 @@ Routing beda chat ke workspace/model berbeda — edit `config.json`:
 }
 ```
 
-## Kirim file balik ke Telegram
+## Webhook (opsional)
 
-Tiga lapis (otomatis semua, setelah teks):
-
-1. **Tag eksplisit** — agent tulis `MEDIA:/path` (absolut atau relatif ke
-   workspace, tanda baca ujung diabaikan):
-   ```
-   laporan sudah jadi, ini filenya
-   MEDIA:/home/ubuntu/oc-workspace/laporan.pdf
-   ```
-2. **Auto-attach file buatan turn** — file baru/berubah selama turn yang
-   disebut di jawaban (path/basenamenya) langsung dilampirkan meski tanpa
-   tag (maks 5/turn). Aturan mainnya ada di `oc-workspace/AGENTS.md` yang
-   dibaca agent (jawab Indonesia, jangan tempel biner ke teks).
-3. **Guard**: video via `sendVideo` (+streaming), tolak >48MB dengan pesan
-   jelas, path hilang juga dilaporkan (tidak diam).
-
-## Webhook mode (opsional, buat deploy cloud)
-
-Default long-polling cocok buat VPS. Kalau butuh webhook:
+Default long-polling (cocok untuk VPS always-on). Untuk deploy cloud
+yang bangun saat ada traffic masuk:
 
 ```json
-"webhook": {"enabled": true, "url": "https://domain-lu/telegram", "secret": "hasil-openssl-rand-hex-32", "port": 8443}
+"webhook": {"enabled": true, "url": "https://domain-kamu/telegram", "secret": "hasil-openssl-rand-hex-32", "port": 8443}
 ```
 
-## Keamanan — BACA INI
+## Keamanan — baca ini
 
-1. **Agent punya akses penuh server**: shell, baca/tulis file (default `--auto`).
-   Siapa pun yang bisa chat ke bot = bisa ngendalikan server. Makanya:
-   - `allowed_users` WAJIB diisi. Kalau kosong, semua pesan ditolak.
-   - Untuk group, isi `group_allowed_chats`.
-2. Token bot jangan dishare — kalau bocor, `/revoke` di BotFather.
-3. `config.json` di-`chmod 600`.
-4. Ingin lebih aman? Buat user Linux khusus (mis. `ocbot`) dengan akses terbatas,
-   lalu jalankan service sebagai user itu, dan arahkan `workspace` ke folder user tsb.
-5. Kalau nggak mau agent auto-jalanin perintah berisiko, set
-   `auto_approve: false` — tapi request yang butuh izin akan menggantung
-   (beda dari Hermes yang punya `/approve` interaktif).
+Siapa pun yang bisa chat ke bot bisa mengeksekusi perintah di server
+(agent punya akses shell dan file). Karena itu:
+
+1. `TELEGRAM_ALLOWED_USERS` wajib diisi. Kosong = semua pesan ditolak.
+2. Token bot jangan disebar. Bocor → `/revoke` di BotFather, ganti
+   `.env`, restart service.
+3. `config.json` dan `.env` di-`chmod 600`. Keduanya tidak masuk git
+   (yang masuk repo: `config.json` tanpa rahasia — token cukup
+   `${TELEGRAM_BOT_TOKEN}`).
+4. Mau isolasi lebih? Jalankan service sebagai user Linux khusus dengan
+   akses terbatas dan arahkan `workspace` ke folder user itu.
 
 ## Troubleshooting
 
 | Gejala | Cek |
 |---|---|
 | Bot bisu | `systemctl status oc-telegram`, `tail gateway.log` |
-| 401 Unauthorized | token salah |
-| "akses ditolak" | user ID ≠ isi `allowed_users` |
-| Nggak jalan di group | Group Privacy OFF + masuk ulang bot + isi `group_allowed_chats` |
-| Balasan terpotong | normal, dibagi per 4000 karakter |
-| Agent lambat | `timeout_sec` di profil; cek `opencode` & provider |
+| 401 Unauthorized | token salah di `.env` |
+| "akses ditolak" | user ID tidak ada di `TELEGRAM_ALLOWED_USERS` |
+| Tidak jalan di grup | Group Privacy OFF + bot keluar-masuk ulang + `TELEGRAM_GROUP_ALLOWED_CHATS` |
+| Suggest `/` tidak muncul | force-close aplikasi Telegram, ketik `/` saja (huruf memfilter daftar) |
+| "Thinking…" lama | model lambat — `/stop`, ganti `/model`, atau `/compress`/`/new` bila konteks bengkak |
+| Balasan panjang terpecah | normal — halaman `(1/3)`, file setelah teks |
 
-## File
+## File dalam repo
 
 ```
-gateway.py    # entry point: main/polling/webhook (115 baris)
-core.py       # config/state/log/RUNTIME (425) — tanpa import modul lain
-tg.py         # transport Telegram + send/edit HTML (277)
-render.py     # rendering jawaban ala Hermes (307)
-pipeline.py   # antrean/run_agent/cron/STT/loop-guard (597)
-commands.py   # semua command + tombol inline (912)
-dispatch.py   # routing update: gate grup/inline/callback (240)
-executor.py   # client HTTP API OpenCode (516)
-config.json   # profil/routing/proxy (TANPA rahasia)
-.env          # token + ID (chmod 600, dimuat service & loader)
+gateway.py    # entry point: main/polling/webhook
+core.py       # config/state/log
+tg.py         # transport Telegram
+render.py     # render jawaban jadi HTML Telegram
+pipeline.py   # antrean turn, cron/loop/heartbeat, STT, goal engine
+commands.py   # semua command + tombol
+dispatch.py   # routing update Telegram
+executor.py   # client HTTP API OpenCode + server privat :4097
+config.json   # profil/routing (tanpa rahasia)
 .env.example  # contoh .env
-state.json    # sesi & model override (auto)
-gateway.log   # log
-~/.cache/oc-gateway/                  # voice/foto/dokumen yang diunduh
-/etc/systemd/system/oc-telegram.service  # (+ EnvironmentFile .env)
+oc-telegram.service  # unit systemd
 ```
 
----
+Runtime (tidak ikut repo): `.env`, `state.json`, `gateway.log`,
+`~/.cache/oc-gateway/` (media terunduh).
 
-## Arsitektur (v4 — API asli OpenCode)
+## Arsitektur
 
-```
-Telegram ──polling──► gateway.py ──HTTP──► opencode serve (privat :4097)
-                          │                    (di-spawn dgn env proxy WARP →
-                          │                     trafik agent keluar lewat IP
-                          │                     WARP; IP asli VPS aman)
-                          └── HTTP API asli OpenCode
-```
+Gateway tidak spawn `opencode run` — ia mengelola server OpenCode
+privat sendiri (port 4097, password acak di `.server_password`) dan
+memakai HTTP API aslinya:
 
-Gateway **tidak** spawn `opencode run` lagi — dia ngobrol pakai **API asli**
-OpenCode lewat server privat yang dia kelola (port 4097, password acak di
-`.server_password`, chmod 600).
-
-| Command | Endpoint OpenCode asli |
+| Command | Endpoint |
 |---|---|
-| kirim pesan | `POST /api/session/{id}/prompt` |
+| kirim pesan (+ file) | `POST /api/session/{id}/prompt` |
 | `/new` | `POST /api/session` |
-| `/compact` | `POST /api/session/{id}/compact` |
+| `/compress` | `POST /api/session/{id}/compact` |
 | `/stop` | `POST /api/session/{id}/interrupt` |
 | `/undo` | `DELETE /api/session/{id}/revert` |
-| `/approve` `/deny` | `POST /api/session/{id}/permission/{rid}/reply` |
-| `/bg` | `POST /api/session/{id}/background` |
+| `/approve` `/deny` | `POST /api/session/{id}/permission/{rid}/reply` + gate regex lokal |
 | `/btw` | `POST /api/session/{id}/fork` |
-| `/usage` | `GET /api/session/{id}` (token asli) |
-| `/model` | `POST /api/session/{id}/model` + picker tombol |
-| `/agents` `/agent` | `GET /api/agent` + `POST /api/session/{id}/agent` |
-| `/sessions` | `GET /api/session?search=` |
-| `/commands` | `GET /api/command` (command asli OpenCode: init, review) |
-| `/run <nama>` | `POST /api/session/{id}/command` |
-| `/init` `/review` | `POST /api/session/{id}/command` (native) |
-| `/skills` `/mcp` `/auth` `/plugins` | mirror endpoint |
-| `/diff` `/export` | `GET .../diff` · `GET .../export` |
-
-File tambahan: `executor.py` (client API + manajemen server privat).
+| `/usage` `/context` | `GET /api/session/{id}` (token asli) |
+| `/model` | `POST /api/session/{id}/model` |
+| `/sessions` | `GET /api/session` |
+| `/init` `/review` via `/run` | `POST /api/session/{id}/command` |
