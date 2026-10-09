@@ -1,0 +1,9 @@
+# rahasia & state live — JANGAN commit
+.env
+state.json
+gateway.log
+.server_password
+.server_pid
+__pycache__/
+*.pyc
+.cache/
