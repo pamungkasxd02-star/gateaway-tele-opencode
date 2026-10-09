@@ -167,6 +167,12 @@ Example goal: `/goal fix all failing tests` — a judge scores each turn
 (`DONE/CONTINUE/BLOCKED`) and the loop continues automatically. Default
 budget 20 turns (`goals.max_turns`). `/goal pause` stops the loop any time.
 
+WARP control: `/proxy` shows status (switch, warp-cli, proxied vs direct
+IP); `/proxy on|off` switches + restarts the server; `/proxy auto on|off`
+toggles auto-rotate on rate limits (default ON — rotates egress IP and
+retries the turn once, 5-min cooldown against flapping); `/rotate` rotates
+manually (reports old → new); `/limits` shows per-model rate-limit hits.
+
 ## Files and media
 
 Inbound: voice/audio transcribed when STT is available, otherwise

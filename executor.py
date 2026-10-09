@@ -159,7 +159,21 @@ def api(method: str, path: str, body=None, timeout: int = 90):
             if r.returncode == 0:
                 return True
             return {"__err": (r.stderr or "").strip()[:300]}
-        return json.loads(out).get("data")
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            # output kepotong/rusak (sekali coba lagi; CLI lokal jadi murah)
+            try:
+                r2 = subprocess.run(cmd, cwd=CWD, capture_output=True,
+                                    text=True, timeout=timeout,
+                                    env={**os.environ,
+                                         "OPENCODE_PASSWORD": _password()})
+                data = json.loads((r2.stdout or "").strip())
+            except Exception:  # noqa: BLE001
+                err = (r.stderr or "").strip().split("\n")[0][:150]
+                return {"__err": "respons API rusak"
+                        + (f" ({err})" if err else "")}
+        return data.get("data") if isinstance(data, dict) else None
     except subprocess.TimeoutExpired:
         return {"__err": "timeout"}
     except Exception as e:  # noqa: BLE001

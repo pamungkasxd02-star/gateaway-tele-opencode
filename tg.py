@@ -170,8 +170,11 @@ class Telegram:
     def set_short_description(self, text: str) -> None:
         self.call("setMyShortDescription", short_description=text)
 
-    def set_commands(self, menu) -> None:
-        self.call("setMyCommands", commands=menu)
+    def set_commands(self, menu) -> bool:
+        r = self.call("setMyCommands", commands=menu)
+        ok = bool(r and r.get("ok"))
+        log(f"setMyCommands {len(menu)} cmd -> {'OK' if ok else 'GAGAL: ' + str(r)[:120]}")
+        return ok
 
     def get_me(self):
         r = self.get("getMe")

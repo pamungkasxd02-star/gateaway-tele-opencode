@@ -139,6 +139,70 @@ def _stream_silent() -> bool:
     return CFG["telegram"].get("notifications", "important") != "all"
 
 
+def _warp_cli(*a) -> str:
+    """Jalankan warp-cli, kembalikan stdout (atau pesan gagal singkat)."""
+    try:
+        r = subprocess.run([CFG.get("warp_cli", "warp-cli"),
+                            "--accept-tos", *a],
+                           capture_output=True, text=True, timeout=30)
+        out = (r.stdout or "").strip()
+        if r.returncode != 0:
+            err = (r.stderr or "").strip().split("\n")[0][:120]
+            return f"(warp-cli gagal: {err or f'rc={r.returncode}'})"
+        return out or "(kosong)"
+    except Exception as e:  # noqa: BLE001
+        return f"(warp-cli gagal: {e})"
+
+
+def _egress_ip(via_proxy: bool) -> str:
+    """IP keluar saat ini, lewat proxy WARP atau langsung."""
+    cmd = ["curl", "-s", "--max-time", "12"]
+    if via_proxy:
+        cmd += ["-x", CFG["proxy"]["url"]]
+    cmd.append("https://www.cloudflare.com/cdn-cgi/trace")
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True,
+                             timeout=20).stdout
+        return next((l.split("=", 1)[1].strip()
+                     for l in out.splitlines() if l.startswith("ip=")),
+                    "?")
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
+_last_auto_rotate = 0.0
+
+
+def _auto_rotate_due() -> bool:
+    p = CFG.get("proxy", {})
+    if not p.get("auto_rotate", True):
+        return False
+    try:
+        cool = max(60, int(p.get("auto_cooldown_sec", 300)))
+    except (TypeError, ValueError):
+        cool = 300
+    return time.time() - _last_auto_rotate >= cool
+
+
+def rotate_egress() -> tuple:
+    """Putus-sambung WARP, verifikasi IP berubah. Kembalikan (lama, baru).
+    Dipakai /rotate (interaktif) dan auto-rotate saat kena limit."""
+    global _last_auto_rotate
+    _last_auto_rotate = time.time()
+    old = _egress_ip(True)
+    _warp_cli("disconnect")
+    time.sleep(2)
+    _warp_cli("connect")
+    new = "?"
+    for _ in range(6):
+        time.sleep(5)
+        new = _egress_ip(True)
+        if new not in ("?", "", old):
+            break
+    log(f"rotate {old} -> {new}")
+    return old, new
+
+
 def _preview_cut(txt: str, limit: int = 3900) -> str:
     """Potong preview streaming di batas paragraf + "…" (bukan motong kata
     di tengah) biar balasan panjang tak membingungkan saat streaming."""
@@ -175,6 +239,7 @@ def run_agent(key: str, chat_id, thread_id, prompt: str,
               mode: str = "normal", reply_to: int = 0,
               files: list = None, model_override: str = "",
               _vision_retry: bool = False,
+              _auto_rotated: bool = False,
               timeout_override: int = 0) -> None:
     """Jalankan satu turn lewat OpenCode HTTP API asli (sesi persisten).
 
@@ -187,7 +252,8 @@ def run_agent(key: str, chat_id, thread_id, prompt: str,
     try:
         return _run_agent_inner(key, chat_id, thread_id, prompt, mode,
                                 reply_to, files, model_override,
-                                _vision_retry, timeout_override)
+                                _vision_retry, _auto_rotated,
+                                timeout_override)
     finally:
         with _active_lock:
             _active -= 1
@@ -197,6 +263,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
                      mode: str = "normal", reply_to: int = 0,
                      files: list = None, model_override: str = "",
                      _vision_retry: bool = False,
+                     _auto_rotated: bool = False,
                      timeout_override: int = 0) -> None:
     profile_name, prof = resolve_profile(chat_id, thread_id)
     sid = STATE.get_session(key) or None
@@ -328,11 +395,33 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
     final_text = "\n".join(st.texts).strip()
 
     if st.error and not final_text:
-        fail = f"❌ <b>Gagal</b>\n{esc(st.error[:400])}"
+        fail = f"❌ <b>Gagal</b>\n{esc(_friendly_error(st.error))}"
         low = st.error.lower()
         if "rate limit" in low or "429" in low or "quota" in low \
                 or "too many request" in low:
             STATE.add_quota(model)
+            if mode == "normal" and not _auto_rotated \
+                    and _auto_rotate_due():
+                note = ("🔄 <b>Kena limit — auto-rotate IP…</b>")
+                if msg_id:
+                    TG.edit(chat_id, msg_id, note)
+                else:
+                    TG.send(chat_id, note)
+                old, new = rotate_egress()
+                if new not in ("?", "", old):
+                    ok_note = (f"✅ IP <code>{esc(old)}</code> → "
+                               f"<code>{esc(new)}</code> — coba lagi…")
+                    if msg_id:
+                        TG.edit(chat_id, msg_id, ok_note)
+                    else:
+                        TG.send(chat_id, ok_note)
+                    return run_agent(key, chat_id, thread_id, prompt,
+                                     mode=mode, reply_to=reply_to,
+                                     files=files, model_override=model_override,
+                                     _vision_retry=_vision_retry,
+                                     _auto_rotated=True,
+                                     timeout_override=timeout_override)
+                log(f"[{key}] auto-rotate gagal ({old}->{new})")
             fail += ("\n\n💡 <b>Kena limit.</b> <code>/rotate</code> ganti IP "
                      "· <code>/model</code> ganti model · "
                      "<code>/limits</code> pantau.")
@@ -502,6 +591,18 @@ def _goal_after_turn(key: str, chat_id, thread_id, sid: str,
                          f"{max_turns}):\n{esc(reason)[:300]}")
         log(f"[{key}] goal continue {used}/{max_turns}: {reason[:80]}")
         enqueue(key, lambda p=cont: run_agent(key, chat_id, thread_id, p))
+
+
+def _friendly_error(err: str) -> str:
+    """Jangan bocorkan traceback/JSON mentah ke chat."""
+    e = (err or "").strip()
+    low = e.lower()
+    if e.startswith("{") or "traceback" in low \
+            or "unterminated string" in low or "expecting value" in low \
+            or "jsondecode" in low.replace(" ", ""):
+        return ("Gangguan teknis sebentar (respons server rusak). "
+                "Coba /retry.")
+    return e[:400]
 
 
 def _send_media_kind(chat_id, p: str) -> bool:

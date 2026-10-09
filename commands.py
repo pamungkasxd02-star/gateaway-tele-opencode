@@ -12,7 +12,8 @@ import time
 import executor
 from core import (CFG, RUNTIME, STATE, esc, log, resolve_profile, save_cfg,
                   session_key)
-from pipeline import _parse_interval, enqueue, run_agent
+from pipeline import (_egress_ip, _parse_interval, _warp_cli, enqueue,
+                      rotate_egress, run_agent)
 from render import fmt_tokens
 from tg import TG, edit_rich, kv_block, send_rich
 
@@ -46,8 +47,18 @@ BUTTON_MAP = {
 
 def send_keyboard(chat_id) -> None:
     TG.call("sendMessage", chat_id=chat_id,
-            text="⌨️ Tombol cepat aktif — tap langsung jalan.",
+            text="⌨️ Tombol cepat aktif — tap langsung jalan.\n"
+                 "Catatan: selama keyboard ini terbuka, tombol Menu (☰) "
+                 "disembunyikan Telegram. <code>/keyboard off</code> untuk "
+                 "kembalikan tombol Menu.",
+            parse_mode="HTML",
             reply_markup=json.dumps(KEYBOARD))
+
+
+def hide_keyboard(chat_id) -> None:
+    TG.call("sendMessage", chat_id=chat_id,
+            text="⌨️ Tombol cepat dimatikan — tombol Menu (☰) kembali.",
+            reply_markup=json.dumps({"remove_keyboard": True}))
 
 
 MENU = {"inline_keyboard": [
@@ -485,7 +496,7 @@ def handle_hermes(c: str, chat_id: int, thread_id, user_id: int,
                   f"• webhook: <b>{'ON' if CFG['gateway']['webhook']['enabled'] else 'OFF'}</b>")
         return True
 
-    if c == "reload-mcp":
+    if c in ("reload-mcp", "reloadmcp"):
         out = run_cli(["mcp", "list"])
         send_rich(chat_id, f"🔌 <b>MCP servers</b>\n<pre>{esc(out[:1500])}</pre>\n"
                            "MCP dimuat saat server start — "
@@ -1178,37 +1189,6 @@ def handle_config(chat_id: int, thread_id, user_id: int, args: list) -> None:
         (k, v) for k, v in rows]))
 
 
-def _warp_cli(*a) -> str:
-    """Jalankan warp-cli, kembalikan stdout (atau pesan gagal singkat)."""
-    try:
-        r = subprocess.run([CFG.get("warp_cli", "warp-cli"),
-                            "--accept-tos", *a],
-                           capture_output=True, text=True, timeout=30)
-        out = (r.stdout or "").strip()
-        if r.returncode != 0:
-            err = (r.stderr or "").strip().split("\n")[0][:120]
-            return f"(warp-cli gagal: {err or f'rc={r.returncode}'})"
-        return out or "(kosong)"
-    except Exception as e:  # noqa: BLE001
-        return f"(warp-cli gagal: {e})"
-
-
-def _egress_ip(via_proxy: bool) -> str:
-    """IP keluar saat ini, lewat proxy WARP atau langsung."""
-    cmd = ["curl", "-s", "--max-time", "12"]
-    if via_proxy:
-        cmd += ["-x", CFG["proxy"]["url"]]
-    cmd.append("https://www.cloudflare.com/cdn-cgi/trace")
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True,
-                             timeout=20).stdout
-        return next((l.split("=", 1)[1].strip()
-                     for l in out.splitlines() if l.startswith("ip=")),
-                    "?")
-    except Exception:  # noqa: BLE001
-        return "?"
-
-
 def handle_command(chat_id: int, thread_id, user_id: int, args: list,
                    full_text: str = "", msg_id: int = 0) -> None:
     c = args[0].lower().lstrip("/").split("@")[0]
@@ -1216,10 +1196,11 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
 
     if c in ("start", "help"):
         send_rich(chat_id, HELP_HTML)
-        if c == "start":
-            send_keyboard(chat_id)
     elif c == "keyboard":
-        send_keyboard(chat_id)
+        if len(args) >= 2 and args[1].lower() in ("off", "hide", "0"):
+            hide_keyboard(chat_id)
+        else:
+            send_keyboard(chat_id)
     elif c == "status":
         name, prof = resolve_profile(chat_id, thread_id)
         model = STATE.get_model(key) or prof.get("model") or "profile default"
@@ -1271,7 +1252,14 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
         STATE.set_home(chat_id)
         send_rich(chat_id, f"📌 Home channel: <code>{esc(chat_id)}</code>")
     elif c == "proxy":
-        if len(args) >= 2 and args[1].lower() in ("on", "off"):
+        if len(args) >= 3 and args[1].lower() == "auto" \
+                and args[2].lower() in ("on", "off"):
+            CFG["proxy"]["auto_rotate"] = args[2].lower() == "on"
+            save_cfg(CFG)
+            send_rich(chat_id, "Auto-rotate saat limit: <b>"
+                      + ("ON" if CFG["proxy"]["auto_rotate"] else "OFF")
+                      + "</b>")
+        elif len(args) >= 2 and args[1].lower() in ("on", "off"):
             CFG["proxy"]["enabled"] = args[1].lower() == "on"
             save_cfg(CFG)
             msg = ("✅ Proxy <b>ON</b> <code>"
@@ -1287,6 +1275,7 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
                 send_rich(chat_id, f"❌ restart server gagal: {esc(e)[:120]}")
         else:
             on = bool(CFG["proxy"].get("enabled"))
+            auto = bool(CFG["proxy"].get("auto_rotate", True))
             send_rich(chat_id, "⏳ Cek status proxy…")
 
             def _st():
@@ -1301,10 +1290,12 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
                 send_rich(chat_id,
                           "<b>Proxy WARP</b>\n" + kv_block([
                               ("Switch", "ON" if on else "OFF"),
+                              ("Auto-rotate", "ON" if auto else "OFF"),
                               ("warp-cli", wsum),
                               ("Egress (proxy)", ip_p),
                               ("Egress (langsung)", ip_d),
                           ]) + "\n<code>/proxy on|off</code> · "
+                          "<code>/proxy auto on|off</code> · "
                           "<code>/rotate</code> ganti IP · "
                           "<code>/limits</code> status limit")
             threading.Thread(target=_st, daemon=True).start()
@@ -1312,21 +1303,10 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
         send_rich(chat_id, "🔄 Rotate IP WARP…")
 
         def _rotate():
-            old = _egress_ip(True)
-            off = _warp_cli("disconnect")
-            time.sleep(2)
-            on = _warp_cli("connect")
-            tries, new = 0, "?"
-            while tries < 6:
-                time.sleep(5)
-                new = _egress_ip(True)
-                if new not in ("?", "", old):
-                    break
-                tries += 1
+            old, new = rotate_egress()
             if new in ("?", "", old):
                 send_rich(chat_id,
                           "❌ <b>Rotate gagal / IP sama</b>\n"
-                          f"<pre>{esc((off + chr(10) + on)[-600:])}</pre>\n"
                           "Coba lagi nanti atau cek `warp-cli status` di VPS.")
             else:
                 send_rich(chat_id,
@@ -1357,6 +1337,8 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
                   "<b>Rate limits</b>\n"
                   f"Model aktif: <code>{esc(cur)}</code>\n"
                   f"Egress: <code>{esc(_egress_ip(bool(CFG['proxy'].get('enabled'))))}</code>\n"
+                  f"Auto-rotate: <b>{'ON' if CFG['proxy'].get('auto_rotate', True) else 'OFF'}</b> "
+                  "(<code>/proxy auto on|off</code>)\n"
                   + body +
                   "\n\nKena limit? <code>/rotate</code> (ganti IP) · "
                   "<code>/model</code> (ganti model, kuota terpisah) · "
