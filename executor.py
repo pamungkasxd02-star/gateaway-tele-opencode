@@ -21,10 +21,13 @@ dan ngobrol pakai API aslinya — sama persis kayak Hermes ngobrol sama agent-ny
     POST /api/session/{id}/permission/{rid}/reply -> approve/deny
 """
 
+import base64
 import json
 import os
 import subprocess
 import time
+import urllib.error
+import urllib.request
 
 HOST = "127.0.0.1"
 PORT = 4097
@@ -65,12 +68,8 @@ def _server_env(proxy_on: bool) -> dict:
 
 
 def server_up() -> bool:
-    r = subprocess.run([OPENCODE, "api", "--server", BASE, "get",
-                        "/api/info"],
-                       cwd=CWD, capture_output=True, text=True, timeout=30,
-                       env={**os.environ,
-                            "OPENCODE_PASSWORD": _password()})
-    return r.returncode == 0 and r.stdout.strip().startswith("{")
+    d = api("get", "/api/info", timeout=15)
+    return d is not None and not is_err(d)
 
 
 PID_FILE = os.path.join(GW_DIR, ".server_pid")
@@ -144,40 +143,44 @@ def restart_server(proxy_on: bool = True):
 # API call
 # ---------------------------------------------------------------------------
 
+def _auth_header() -> dict:
+    tok = base64.b64encode(f"opencode:{_password()}".encode()).decode()
+    return {"Authorization": f"Basic {tok}",
+            "Content-Type": "application/json"}
+
+
 def api(method: str, path: str, body=None, timeout: int = 90):
-    cmd = [OPENCODE, "api", "--server", BASE, method, path]
-    if body is not None:
-        cmd += ["-d", json.dumps(body)]
+    """HTTP langsung ke server privat (tanpa CLI: tanpa batas output 256KB,
+    tanpa spawn proses per call). Kontrak tetap: data / True / __err."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data,
+                                 headers=_auth_header(),
+                                 method=method.upper())
     try:
-        r = subprocess.run(cmd, cwd=CWD, capture_output=True, text=True,
-                           timeout=timeout,
-                           env={**os.environ,
-                                "OPENCODE_PASSWORD": _password()})
-        out = (r.stdout or "").strip()
-        if not out:
-            # sukses tanpa body (delete/background/revert) vs gagal
-            if r.returncode == 0:
-                return True
-            return {"__err": (r.stderr or "").strip()[:300]}
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
         try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
-            # output kepotong/rusak (sekali coba lagi; CLI lokal jadi murah)
-            try:
-                r2 = subprocess.run(cmd, cwd=CWD, capture_output=True,
-                                    text=True, timeout=timeout,
-                                    env={**os.environ,
-                                         "OPENCODE_PASSWORD": _password()})
-                data = json.loads((r2.stdout or "").strip())
-            except Exception:  # noqa: BLE001
-                err = (r.stderr or "").strip().split("\n")[0][:150]
-                return {"__err": "respons API rusak"
-                        + (f" ({err})" if err else "")}
-        return data.get("data") if isinstance(data, dict) else None
-    except subprocess.TimeoutExpired:
+            err = json.loads(e.read().decode() or "{}")
+        except Exception:  # noqa: BLE001
+            err = {}
+        msg = (err.get("message") or "").strip()
+        tag = (err.get("_tag") or "").strip()
+        detail = f"{tag}: {msg}" if tag else (msg or f"HTTP {e.code}")
+        return {"__err": detail[:300]}
+    except TimeoutError:
         return {"__err": "timeout"}
     except Exception as e:  # noqa: BLE001
         return {"__err": str(e)[:300]}
+    if not raw.strip():
+        return True  # sukses tanpa body (delete/background/revert)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"__err": f"respons API rusak ({path})"}
+    if isinstance(payload, dict) and "data" in payload:
+        return payload.get("data")
+    return payload  # sebagian endpoint (/api/info) tak bungkus data
 
 
 def is_err(d) -> bool:
@@ -348,12 +351,19 @@ def agent_list():
 
 
 def export_session(sid: str, path: str):
-    r = subprocess.run(
-        [OPENCODE, "api", "--server", BASE, "get",
-         f"/api/experimental/session/{sid}/export", "-o", path],
-        cwd=CWD, capture_output=True, text=True, timeout=120,
-        env={**os.environ, "OPENCODE_PASSWORD": _password()})
-    return r.returncode == 0 and os.path.exists(path)
+    req = urllib.request.Request(
+        BASE + f"/api/experimental/session/{sid}/export",
+        headers=_auth_header(), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            blob = r.read()
+            if not blob:
+                return False
+            with open(path, "wb") as f:
+                f.write(blob)
+            return os.path.exists(path)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def diff(sid: str):
