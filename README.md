@@ -102,7 +102,7 @@ kalau chat jalan), keyboard ini permanen.
 | `/whoami` | user/chat/akses |
 | `/mcp` · `/auth` · `/plugins` · `/update` | mirror CLI opencode |
 | `/approve` · `/deny` | approval buat prompt berbahaya (gateway deteksi `rm -rf`, `mkfs`, dll) |
-| `/sethome` · `/platforms` · `/platform list` | manajemen gateway |
+| `/sethome` · `/platforms` (= `/platform`) | manajemen gateway |
 | `/proxy on\|off` · `/rotate` · `/limits` | WARP (IP keluar agent) + status limit |
 | `/cron list` · `/cron add <expr> <prompt>` · `/cron rm/on/off <id>` | scheduled task ala Hermes |
 | `/goal teks` · `/goal status|pause|resume|clear` · `/subgoal` | standing goal Ralph-loop |
@@ -176,7 +176,9 @@ Sesi jalan → **dua bubble** persis Hermes:
 - Grup: pesan pemicu di-tag `[nick|id]`, konteks observasi ditandai
   eksplisit sebagai konteks (bukan instruksi) ala Hermes
 - `/restart` → sesudah boot bot kirim "✅ Gateway restarted — sesi lanjut."
-  ke chat peminta (persis bot gateway lain)
+  ke chat peminta (persis bot gateway lain). Restart **graceful**: turn
+  yang sedang jalan ditunggu sampai selesai (maks 150 dtk) supaya jawaban
+  tidak hilang di tengah jalan.
 
 Contoh footer:
 

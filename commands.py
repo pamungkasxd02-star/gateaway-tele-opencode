@@ -437,8 +437,9 @@ def handle_hermes(c: str, chat_id: int, thread_id, user_id: int,
         return True
 
     if c == "insights":
-        out = run_cli(["stats"])
-        send_rich(chat_id, f"<b>Insights</b>\n<pre>{esc(out[:2500])}</pre>")
+        # alias jujur: sama kayak /stats (satu perilaku, tak dobel)
+        text, kb = nav_content("stats", chat_id, thread_id)
+        send_rich(chat_id, text, kb)
         return True
 
     if c == "bg" and len(args) > 1:
@@ -474,18 +475,21 @@ def handle_hermes(c: str, chat_id: int, thread_id, user_id: int,
         threading.Thread(target=_btw, daemon=True).start()
         return True
 
-    if c == "platform" and len(args) >= 2 and args[1] == "list":
+    if c == "platform":
+        # alias: /platform list|status == /platforms (satu output, tak dobel)
         bu = RUNTIME["bot_username"]
-        out = ("telegram   running  @"
-               + (bu or "?")
-               + "\npolling    "
-               + ("off" if CFG["gateway"]["webhook"]["enabled"] else "on"))
-        send_rich(chat_id, f"<b>Adapters</b>\n<pre>{esc(out)}</pre>")
+        send_rich(chat_id,
+                  "🔌 <b>Platform</b>\n"
+                  f"• telegram: ✅ @{esc(bu or '?')}\n"
+                  f"• polling: <b>{'OFF' if CFG['gateway']['webhook']['enabled'] else 'ON'}</b>\n"
+                  f"• webhook: <b>{'ON' if CFG['gateway']['webhook']['enabled'] else 'OFF'}</b>")
         return True
 
     if c == "reload-mcp":
         out = run_cli(["mcp", "list"])
-        send_rich(chat_id, f"MCP servers reloaded.\n<pre>{esc(out[:1500])}</pre>")
+        send_rich(chat_id, f"🔌 <b>MCP servers</b>\n<pre>{esc(out[:1500])}</pre>\n"
+                           "MCP dimuat saat server start — "
+                           "<code>/restart</code> untuk reload penuh.")
         return True
 
     if c in ("commands", "opencode"):
@@ -548,17 +552,6 @@ def handle_hermes(c: str, chat_id: int, thread_id, user_id: int,
             TG.send_media(chat_id, path, "document")
         else:
             send_rich(chat_id, "❌ export gagal.")
-        return True
-
-    if c == "voice":
-        send_rich(chat_id, "Voice replies are not supported by this "
-                           "gateway. Voice <i>input</i> still works — notes "
-                           "are transcribed by the agent.")
-        return True
-
-    if c == "rollback":
-        send_rich(chat_id, "No filesystem checkpoints here. Use git in the "
-                           "workspace: <code>/workspace</code> shows where.")
         return True
 
     if c == "update":
@@ -704,18 +697,20 @@ def handle_extra(c: str, chat_id: int, thread_id, user_id: int,
 HELP_HTML = (
     "<b>OpenCode Gateway</b>\n\n"
     "Send any message — it runs on the server and the reply comes back "
-    "here. Voice notes, photos and files are forwarded to the agent.\n\n"
+    "here. Voice notes, photos and files are forwarded to the agent; "
+    "files the agent makes are attached back automatically.\n\n"
     "<b>Session</b>\n"
-    "<code>/new</code> · <code>/reset</code> — new conversation\n"
+    "<code>/new</code> (= <code>/reset</code>) — new conversation\n"
     "<code>/retry</code> — run the last message again\n"
     "<code>/undo</code> — remove the last exchange\n"
-    "<code>/compress</code> — compress conversation context\n"
-    "<code>/title [name]</code> — set the session title\n"
+    "<code>/compress</code> (= <code>/compact</code>) — compress context\n"
+    "<code>/title [name]</code> (= <code>/rename</code>) — set title\n"
     "<code>/resume [name]</code> — resume a named session\n"
-    "<code>/sessions [search text]</code> — list sessions\n"
+    "<code>/sessions</code> — list/switch · <code>/session id</code> — jump\n"
     "<code>/stop</code> — stop the running agent\n"
-    "<code>/bg &lt;prompt&gt;</code> — run in background\n"
-    "<code>/btw &lt;question&gt;</code> — side question\n\n"
+    "<code>/bg &lt;prompt&gt;</code> — background task\n"
+    "<code>/btw &lt;question&gt;</code> — side question\n"
+    "<code>/branch [name]</code> — fork session here\n\n"
     "<b>Model</b>\n"
     "<code>/model [provider:model]</code> — show or change model\n"
     "<code>/models</code> · <code>/agents</code> · <code>/agent [name]</code>\n"
@@ -727,24 +722,29 @@ HELP_HTML = (
     "<code>/loop 5m cek deploy [--times N]</code> · "
     "<code>/loop status|stop id</code>\n"
     "<code>/heartbeat every 5m ...</code> — hanya saat idle\n"
-    "<code>/queue prompt</code> · <code>/steer catatan</code> · "
-    "<code>/branch</code> · <code>/plan tugas</code>\n\n"
+    "<code>/queue prompt</code> — antre giliran berikut\n"
+    "<code>/steer catatan</code> — arahkan turn berikut\n"
+    "<code>/plan tugas</code> — tulis rencana, tanpa eksekusi\n\n"
     "<b>Info</b>\n"
     "<code>/status</code> · <code>/usage</code> · <code>/context</code> · "
-    "<code>/insights</code> · <code>/whoami</code>\n"
-    "<code>/mcp</code> · <code>/auth</code> · <code>/plugins</code> · "
-    "<code>/update</code> · <code>/config</code> · <code>/egress</code>\n\n"
+    "<code>/whoami</code> · <code>/stats</code> (= <code>/insights</code>)\n"
+    "<code>/mcp</code> (+<code>/reload-mcp</code>) · <code>/auth</code> · "
+    "<code>/plugins</code> · <code>/update</code> · <code>/config</code>\n"
+    "<code>/commands</code> · <code>/run nama</code> · "
+    "<code>/skills</code> · <code>/diff</code> · <code>/export</code>\n"
+    "<code>/init</code> · <code>/review [target]</code>\n\n"
     "<b>Gateway</b>\n"
-    "<code>/sethome</code> · <code>/platforms</code> · <code>/menu</code>\n"
-    "<code>/proxy on|off</code> · <code>/rotate</code> · "
-    "<code>/limits</code>\n"
+    "<code>/sethome</code> · <code>/platforms</code> (= <code>/platform</code>)"
+    " · <code>/menu</code> · <code>/keyboard</code>\n"
+    "<code>/proxy on|off</code> (= <code>/egress</code> status) · "
+    "<code>/rotate</code> · <code>/limits</code>\n"
     "<code>/cron list|add|rm|on|off</code> — scheduled tasks ke home\n"
     "<code>/approve</code> · <code>/deny</code> — dangerous command "
     "approval\n"
     "<code>/footer on|off</code> · <code>/restart</code> · "
     "<code>/help</code>\n\n"
-    "Only allowlisted users can use this bot. The agent has full access "
-    "to this server."
+    "Command lain yang diketik dijalankan sebagai skill agent. "
+    "Only allowlisted users can use this bot."
 )
 
 
@@ -1379,10 +1379,15 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
                   f"• polling: <b>{'OFF' if CFG['gateway']['webhook']['enabled'] else 'ON'}</b>\n"
                   f"• webhook: <b>{'ON' if CFG['gateway']['webhook']['enabled'] else 'OFF'}</b>")
     elif c == "restart":
-        TG.send(chat_id, "♻️ Restart gateway…")
+        from pipeline import active_turns, wait_active  # noqa: PLC0415
+        n = active_turns()
+        TG.send(chat_id, "♻️ Restart gateway…"
+                + (f"\nNunggu {n} turn selesai dulu…" if n else ""))
         STATE.set_restart_notice(chat_id, thread_id)
-        log("restart diminta via /restart")
+        log(f"restart diminta via /restart (turn aktif: {n})")
         time.sleep(1)
+        if n and not wait_active(150):
+            log("restart paksa: masih ada turn jalan")
         os._exit(3)
     elif c == "cron":
         handle_cron(chat_id, thread_id, user_id, args)
@@ -1418,13 +1423,15 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
     else:
         if handle_extra(c, chat_id, thread_id, user_id, args, msg_id):
             return
-        # gaya Hermes: /command tak dikenal = invokasi skill ke agent
+        # gaya Hermes: /command tak dikenal = invokasi skill ke agent.
+        # Timeout pendek (300s): skill asing tak boleh bakar turn panjang.
         skill_text = full_text or " ".join(args)
         send_rich(chat_id, f"Running <code>{esc(args[0])}</code> as a skill…")
         enqueue(key, lambda st=skill_text, a=args[0]: run_agent(
             key, chat_id, thread_id,
             f"{st}\n\n(The leading {a} is a skill name — use "
-            "that skill if it exists, otherwise do the task directly.)"))
+            "that skill if it exists, otherwise do the task directly. "
+            "Be concise.)", timeout_override=300))
 
 
 # ----------------------------------------------------------------------------

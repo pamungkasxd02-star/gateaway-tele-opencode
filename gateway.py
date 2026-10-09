@@ -66,20 +66,36 @@ def run_webhook() -> None:
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 
 
+_admit = threading.BoundedSemaphore(value=32)
+
+
+def _handle_async(u: dict) -> None:
+    """Dispatch update di worker thread: polling tak pernah macet gara-gara
+    download media / transkrip yang lambat (satu pesan berat tak boleh
+    membekukan seluruh bot)."""
+    with _admit:
+        try:
+            handle_update(u)
+        except Exception as e:  # noqa: BLE001
+            log(f"handle_update error: {e}")
+
+
 def run_polling() -> None:
     offset = TG.drop_pending() \
         if CFG["telegram"].get("drop_pending_on_cold_boot", True) else 0
     log(f"polling start offset={offset}")
     while True:
         try:
+            from pipeline import _shutdown  # noqa: PLC0415
+            if _shutdown.is_set():
+                log("polling stop (shutdown)")
+                return
             r = TG.get_updates(offset, CFG["poll_timeout"])
             if r and r.get("ok"):
                 for u in r["result"]:
                     offset = u["update_id"] + 1
-                    try:
-                        handle_update(u)
-                    except Exception as e:  # noqa: BLE001
-                        log(f"handle_update error: {e}")
+                    threading.Thread(target=_handle_async, args=(u,),
+                                     daemon=True).start()
         except KeyboardInterrupt:
             log("stop")
             return
@@ -97,6 +113,15 @@ def _mark_offline(*a) -> None:
     try:
         if CFG["telegram"].get("status_indicator"):
             TG.set_short_description("🔴 Offline")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from pipeline import _shutdown, active_turns, wait_active  # noqa: PLC0415
+        _shutdown.set()
+        n = active_turns()
+        log(f"gateway stop (turn aktif: {n})")
+        if n:
+            wait_active(150)
     except Exception:  # noqa: BLE001
         pass
     log("gateway stop")

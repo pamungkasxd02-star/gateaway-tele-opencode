@@ -151,15 +151,53 @@ def _preview_cut(txt: str, limit: int = 3900) -> str:
     return cut[:limit - 1] + "…"
 
 
+_active = 0
+_active_lock = threading.Lock()
+_shutdown = threading.Event()
+
+
+def active_turns() -> int:
+    with _active_lock:
+        return _active
+
+
+def wait_active(timeout: float = 150) -> bool:
+    """Tunggu turn selesai (buat restart graceful). True bila sepi."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if active_turns() <= 0:
+            return True
+        time.sleep(1)
+    return False
+
+
 def run_agent(key: str, chat_id, thread_id, prompt: str,
               mode: str = "normal", reply_to: int = 0,
               files: list = None, model_override: str = "",
-              _vision_retry: bool = False) -> None:
+              _vision_retry: bool = False,
+              timeout_override: int = 0) -> None:
     """Jalankan satu turn lewat OpenCode HTTP API asli (sesi persisten).
 
     Alur ala Hermes: preview senyap -> edit progresif (plain) -> final
     HTML rapi (markdown di-render, tabel dinormalisasi, halaman bernomor).
     """
+    global _active
+    with _active_lock:
+        _active += 1
+    try:
+        return _run_agent_inner(key, chat_id, thread_id, prompt, mode,
+                                reply_to, files, model_override,
+                                _vision_retry, timeout_override)
+    finally:
+        with _active_lock:
+            _active -= 1
+
+
+def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
+                     mode: str = "normal", reply_to: int = 0,
+                     files: list = None, model_override: str = "",
+                     _vision_retry: bool = False,
+                     timeout_override: int = 0) -> None:
     profile_name, prof = resolve_profile(chat_id, thread_id)
     sid = STATE.get_session(key) or None
     model = model_override or STATE.get_model(key) or prof.get("model") or ""
@@ -276,7 +314,8 @@ def run_agent(key: str, chat_id, thread_id, prompt: str,
 
     try:
         st = executor.run_turn(sid, full_prompt, on_update=render,
-                               timeout=int(prof.get("timeout_sec", 900)),
+                               timeout=timeout_override or
+                               int(prof.get("timeout_sec", 900)),
                                files=files or None)
     finally:
         stop_typing.set()
