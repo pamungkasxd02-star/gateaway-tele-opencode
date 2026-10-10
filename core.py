@@ -248,12 +248,19 @@ class State:
 
     def set_session(self, key: str, sid: str) -> None:
         with self.lock:
-            self.data["sessions"][key] = sid
+            if self.data["sessions"].get(key) != sid:
+                # sesi ganti = konteks server fresh -> hitungan token
+                # mulai dari nol lagi (footer % jujur)
+                self.data["sessions"][key] = sid
+                self.data.setdefault("usage", {})[key] = {"input": 0,
+                                                          "output": 0}
             self.save()
 
     def clear_session(self, key: str) -> None:
         with self.lock:
             self.data["sessions"].pop(key, None)
+            self.data.setdefault("usage", {})[key] = {"input": 0,
+                                                      "output": 0}
             self.save()
 
     def list_sessions(self):

@@ -435,7 +435,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
         elif not st.tools:
             idle = now - started
             tick = int(idle // 15 * 15)
-            txt = f"💭 Thinking… {tick}s" if tick >= 30 else PREVIEW_TEXT
+            txt = f"Mengetik… {tick}s" if tick >= 30 else PREVIEW_TEXT
         else:
             txt = PREVIEW_TEXT
         if txt != last_render[0]:
@@ -561,17 +561,24 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
     if show_reasoning and reasoning_seen:
         r_txt = "\n".join(reasoning_seen)[-1200:]
         blocks.append(f"<blockquote>{esc(r_txt)}</blockquote>")
+    # Token konteks = total SESI (akumulasi + turn ini), bukan cuma
+    # laporan per-message server (kadang 0) — footer % jujur.
+    _u = STATE.get_usage(key)
+    _ctx_tokens = (_u.get("input", 0) + _u.get("output", 0)
+                   + st.usage["input"] + st.usage["output"])
+    if not _ctx_tokens:
+        _ctx_tokens = st.last_input
     footer = ""
     if CFG["telegram"].get("footer"):
         footer = hermes_footer(model=model,
-                               context_tokens=st.last_input,
+                               context_tokens=_ctx_tokens,
                                context_length=ctx_len,
                                cwd=workspace, latency=elapsed)
     if footer:
         blocks.append(f"────────\n<i>{esc(footer)}</i>")
-    if ctx_len and st.last_input:
+    if ctx_len and _ctx_tokens:
         try:
-            pct = round(st.last_input / ctx_len * 100)
+            pct = round(_ctx_tokens / ctx_len * 100)
         except (TypeError, ZeroDivisionError):
             pct = 0
         if pct >= 70:
@@ -603,7 +610,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
             for i, pg in enumerate(pages):
                 TG.send_html(chat_id, pg,
                              reply_to=reply_to if i == 0 else 0)
-    _maybe_auto_compact(key, chat_id, sid, st.last_input, ctx_len)
+    _maybe_auto_compact(key, chat_id, sid, _ctx_tokens, ctx_len)
     STATE.add_usage(key, st.usage["input"], st.usage["output"])
     STATE.note_activity(key)
     log(f"[{key}] done {elapsed:.1f}s out={len(final_text)}c "

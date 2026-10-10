@@ -38,7 +38,7 @@ SILENCE_RE = re.compile(
     re.IGNORECASE)
 
 
-PREVIEW_TEXT = "💭 Thinking…"
+PREVIEW_TEXT = "Mengetik…"
 
 
 TOOL_PREVIEW_CAP = 64
@@ -72,24 +72,28 @@ def _preview_40(label: str) -> str:
 
 
 def progress_line(name: str, label: str, done: bool) -> str:
-    """Satu baris progress ala Hermes: `💻 bash...` -> `💻 Running "cmd"`."""
-    emoji = tool_icon(name)
+    """Satu baris progress TEKS POLOS (tanpa emoji).
+
+    Client Telegram tertentu (topic/channel/desktop Linux) render
+    emoji 💻📖🔍 sebagai kotak tofu jelek — bubble progres murni teks
+    biar enak dibaca di semua client.
+    """
     tool = (name or "tool").strip() or "tool"
     if not done:
-        return f"{emoji} <b>{esc(tool)}</b>..."
+        return f"<b>{esc(tool)}</b>…"
     if tool.lower() in TERMINAL_TOOLS:
         prev = _preview_40((label or "").split("\n")[0].strip() or label)
     else:
         prev = _preview_40(label)
     verb = TOOL_VERBS.get(tool.lower())
     if tool.lower() in TOOL_NO_PREVIEW:
-        return f"{emoji} {verb}" if verb else f"{emoji} <b>{esc(tool)}</b>..."
+        return f"{verb}" if verb else f"<b>{esc(tool)}</b>…"
     if verb and prev:
         conn = " for " if tool.lower() in TOOL_VERB_FOR else " "
-        return f'{emoji} {verb}{conn}"{esc(prev)}"'
+        return f'{verb}{conn}"{esc(prev)}"'
     if prev and prev.lower() != tool.lower():
-        return f'{emoji} {esc(tool)}: "{esc(prev)}"'
-    return f"{emoji} <b>{esc(tool)}</b>..."
+        return f'{esc(tool)}: "{esc(prev)}"'
+    return f"<b>{esc(tool)}</b>…"
 
 
 TERMINAL_TOOLS = {"bash", "shell", "terminal", "execute", "execute_code"}
@@ -113,19 +117,20 @@ def _bash_short(label: str) -> str:
 
 
 def _bash_line(label: str) -> str:
-    """SATU baris rapi buat script panjang: jenis + target + hitungan."""
+    """SATU baris rapi buat script panjang: jenis + target + hitungan
+    (teks polos, tanpa emoji)."""
     first = ((label or "").split("\n")[0] or "").strip()
     m = _COUNT_RE.search(label or "")
     extra = f" · +{m.group(1)} baris" if m else ""
     mh = re.match(r"^\s*cat\s*(>>?)\s*(\S+)", first)
     if mh:
         op = "Tambah ke" if mh.group(1) == ">>" else "Tulis"
-        return f"✏️ {op} <code>{esc(mh.group(2))}</code>{extra}"
+        return f"{op} <code>{esc(mh.group(2))}</code>{extra}"
     if re.match(r"^\s*python3?\s+-(\s|$)", first):
-        return f"🐍 Script python{extra}"
+        return f"Script python{extra}"
     if re.match(r"^\s*(?:bash|sh)(\s|$)", first):
-        return f"💻 Script bash{extra}"
-    return f"💻 <code>{esc(first[:72])}</code>{extra}"
+        return f"Script bash{extra}"
+    return f"<code>{esc(first[:72])}</code>{extra}"
 
 
 def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) -> str:
@@ -145,7 +150,7 @@ def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) ->
                     blocks[-1][1].append(f"<pre>{esc(short)}</pre>")
                 else:
                     blocks.append((f"t:{low}",
-                                   [f"{tool_icon(name)} <b>{esc(name or 'tool')}</b>",
+                                   [f"<b>{esc(name or 'tool')}</b>",
                                     f"<pre>{esc(short)}</pre>"]))
             else:
                 blocks.append((f"s:{name}:{label}:{done}",
