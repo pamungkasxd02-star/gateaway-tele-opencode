@@ -406,8 +406,9 @@ def _brief_scalar(inp: dict, keys: list) -> str:
 
 
 def _terminal_label(inp: dict) -> str:
-    """Label bash rapi ala Hermes: pertahankan baris (max 4),
-    potong rapi per baris — jangan jadikan satu baris hancur."""
+    """Label bash buat ringkasan rapi: command PENDEK lolos utuh (bisa
+    dicopy), script/heredoc PANJANG cukup baris pertama + jumlah baris
+    (render yang bikin ringkasannya — jangan buang infonya di sini)."""
     for k in ("command", "script", "cmd", "code"):
         v = inp.get(k)
         if isinstance(v, str) and v.strip():
@@ -415,11 +416,11 @@ def _terminal_label(inp: dict) -> str:
             lines = [ln for ln in lines if ln.strip()]
             if not lines:
                 continue
-            kept = lines[:4]
-            txt = "\n".join(ln[:180] for ln in kept)
-            if len(lines) > len(kept):
-                txt += f"\n… (+{len(lines) - len(kept)} baris)"
-            return txt[:300]
+            full = "\n".join(ln[:200] for ln in lines)
+            if len(lines) <= 3 and len(full) <= 300:
+                return full
+            first = lines[0][:180]
+            return f"{first}\n… (+{len(lines) - 1} baris)"
     return ""
 
 

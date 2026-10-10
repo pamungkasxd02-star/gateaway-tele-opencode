@@ -123,6 +123,41 @@ def _short(s: str, cap: int) -> str:
     return cut + "…"
 
 
+_COUNT_RE = re.compile(r"\(\+(\d+) baris\)")
+
+
+def _summarize_cmd(label: str) -> tuple:
+    """(kind, teks) buat satu call bash.
+
+    - kind 'pre'  : command pendek -> blok <pre> (TAP-TO-COPY).
+    - kind 'line' : heredoc/script panjang -> SATU baris ringkasan
+      (`✏️ Tulis /tmp/x.py · 120 baris`), bukan dump ratusan baris.
+    """
+    lines = [(ln.rstrip()) for ln in (label or "").splitlines()]
+    lines = [ln for ln in lines if ln.strip()]
+    if not lines:
+        one = " ".join((label or "").split())
+        return ("pre", _short(one, PROG_CMD_MAX_CHARS)) if one else ("", "")
+    first = lines[0]
+    m = _COUNT_RE.search(label or "")
+    extra = f" · +{m.group(1)} baris" if m else ""
+    n_big = bool(m) or len(lines) > 3 or len("\n".join(lines)) > 300
+
+    mh = re.match(r"^\s*cat\s*(>>?)\s*(\S+)\s*<<", first)
+    if mh and n_big:
+        op = "Tambah ke" if mh.group(1) == ">>" else "Tulis"
+        return ("line", f"✏️ {op} <code>{esc(mh.group(2))}</code>{extra}")
+    if re.match(r"^\s*python3?\s+-\s*<<", first) and n_big:
+        return ("line", f"🐍 Script python{extra}")
+    if re.match(r"^\s*(?:bash|sh)\b.*<<", first) and n_big:
+        return ("line", f"💻 Script bash{extra}")
+    if re.match(r"^\s*\S.*<<\s*['\"]?\w+['\"]?\s*$", first) and n_big:
+        return ("line", f"💻 {esc(_short(first, 64))}{extra}")
+    if not n_big:
+        return ("pre", "\n".join(ln[:200] for ln in lines))
+    return ("line", f"💻 {esc(_short(first, 64))}{extra}")
+
+
 def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) -> str:
     """Bubble progres: tool terminal = SATU blok <pre> per call.
 
@@ -137,14 +172,20 @@ def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) ->
     blocks: list = []
     for name, label, done in items:
         low = (name or "").lower()
-        cmd = _clean_cmd(label) if low in TERMINAL_TOOLS else ""
-        if cmd:
-            if blocks and blocks[-1][0] == f"t:{low}":
-                blocks[-1][1].append(f"<pre>{esc(cmd)}</pre>")
+        if low in TERMINAL_TOOLS:
+            kind, txt = _summarize_cmd(label)
+            if kind == "pre" and txt:
+                if blocks and blocks[-1][0] == f"t:{low}":
+                    blocks[-1][1].append(f"<pre>{esc(txt)}</pre>")
+                else:
+                    blocks.append((f"t:{low}",
+                                   [f"{tool_icon(name)} <b>{esc(name or 'tool')}</b>",
+                                    f"<pre>{esc(txt)}</pre>"]))
+            elif txt:
+                blocks.append((f"s:{name}:{label}:{done}", [txt]))
             else:
-                blocks.append((f"t:{low}",
-                               [f"{tool_icon(name)} <b>{esc(name or 'tool')}</b>",
-                                f"<pre>{esc(cmd)}</pre>"]))
+                blocks.append((f"s:{name}:{label}:{done}",
+                               [progress_line(name, label, done)]))
         else:
             blocks.append((f"s:{name}:{label}:{done}",
                            [progress_line(name, label, done)]))
