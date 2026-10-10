@@ -258,7 +258,8 @@ class Telegram:
                 return None
         return path
 
-    def send_media(self, chat_id, path: str, kind: str) -> bool:
+    def send_media(self, chat_id, path: str, kind: str, silent: bool = False,
+                   caption: str = "") -> bool:
         if not os.path.isfile(path):
             log(f"MEDIA tidak ada: {path}")
             self.send(chat_id, f"⚠️ File nggak ketemu: {path}")
@@ -280,6 +281,14 @@ class Telegram:
                "-F", f"{kind}=@{path}", f"{self.api}/{method}"]
         if kind == "video":
             cmd[5:5] = ["-F", "supports_streaming=true"]
+        extra = []
+        if silent:
+            extra += ["-F", "disable_notification=true"]
+        if caption:
+            extra += ["-F", f"caption={caption[:1024]}",
+                      "-F", "parse_mode=HTML"]
+        if extra:
+            cmd[-1:-1] = extra
         if self.proxy:
             cmd[3:3] = ["-x", self.proxy]
         try:

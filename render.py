@@ -77,7 +77,10 @@ def progress_line(name: str, label: str, done: bool) -> str:
     tool = (name or "tool").strip() or "tool"
     if not done:
         return f"{emoji} <b>{esc(tool)}</b>..."
-    prev = _preview_40(label)
+    if tool.lower() in TERMINAL_TOOLS:
+        prev = _preview_40((label or "").split("\n")[0].strip() or label)
+    else:
+        prev = _preview_40(label)
     verb = TOOL_VERBS.get(tool.lower())
     if tool.lower() in TOOL_NO_PREVIEW:
         return f"{emoji} {verb}" if verb else f"{emoji} <b>{esc(tool)}</b>..."
@@ -91,84 +94,26 @@ def progress_line(name: str, label: str, done: bool) -> str:
 
 TERMINAL_TOOLS = {"bash", "shell", "terminal", "execute", "execute_code"}
 
-# Bubble progres: tampilkan N tool terakhir, utuh per call.
+# Bubble progres: tampilkan N tool terakhir, SATU baris per call.
 PROG_MAX_TOOLS = 6
-# Pengaman: bubble tak lebih dari N halaman (halaman pertama = terbaru?
-# tidak — yang TERTUA dibuang dulu, jadi yang kelihatan selalu kerjaan
-# terakhir). Satu halaman ~3700 char.
-PROG_MAX_PAGES = 3
-
-
-def _full_cmd(label: str) -> str:
-    """Command UTUH buat <pre> (copyable + lengkap, tanpa potong).
-    Hanya rapikan whitespace pinggir tiap baris."""
-    lines = [(ln.rstrip()) for ln in (label or "").splitlines()]
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines:
-        return " ".join((label or "").split())
-    return "\n".join(lines)
 
 
 def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) -> str:
-    """Bubble progres: tiap call bash = SATU blok <pre> UTUH.
+    """Bubble progres SUPER-RINGKAS: satu baris per call.
 
-    Aturan perfect ala operator: rapi (satu header `💻 bash ×N` per grup
-    berurutan) + lengkap (isi tak dipotong sepatah kata pun) + bisa
-    dicopy (selalu <pre>, bukan quote). Tool lain satu baris ringkas.
-    Hanya N call terakhir; grup tertua dibuang bila lewat
-    PROG_MAX_PAGES halaman.
+    Command full TIDAK di sini (ada di file lampiran bash-log) —
+    bubble cukup judul kerjaan (`💻 Running "ls ..."`) biar chat tidak
+    ketindis tembok bash. Hanya N call terakhir.
     """
     items = list(tool_lines.values())
     if max_tools and len(items) > max_tools:
         items = items[-max_tools:]
-    blocks: list = []
-    for name, label, done in items:
-        low = (name or "").lower()
-        if low in TERMINAL_TOOLS:
-            cmd = _full_cmd(label) or (name or "tool")
-            if blocks and blocks[-1][0] == f"t:{low}":
-                blocks[-1][1].append(f"<pre>{esc(cmd)}</pre>")
-                n = len(blocks[-1][1]) - 1
-                blocks[-1][1][0] = (
-                    f"{tool_icon(name)} <b>{esc(name or 'tool')} ×{n}</b>")
-            else:
-                blocks.append((f"t:{low}",
-                               [f"{tool_icon(name)} <b>{esc(name or 'tool')}</b>",
-                                f"<pre>{esc(cmd)}</pre>"]))
-        else:
-            blocks.append((f"s:{name}:{label}:{done}",
-                           [progress_line(name, label, done)]))
-    def _join(bs):
-        return "\n".join(ln for _, b in bs for ln in b)
-
-    def _npages(bs):
-        try:
-            return len(split_pages(_join(bs), limit))
-        except Exception:  # noqa: BLE001
-            return 1
-
-    def _retitle(b):
-        key, lines = b
-        if key.startswith("t:") and len(lines) > 1:
-            n = len(lines) - 1
-            base = re.sub(r" ×\d+</b>$", "</b>", lines[0])
-            lines[0] = re.sub(r"</b>$", f" ×{n}</b>", base) if n > 1 else base
-
-    while _npages(blocks) > PROG_MAX_PAGES:
-        if not blocks:
-            break
-        b0 = blocks[0]
-        if len(b0[1]) > 2:
-            b0[1].pop(1)  # buang <pre> tertua, header + sisa utuh
-            _retitle(b0)
-        elif len(blocks) > 1:
-            blocks.pop(0)  # blok kecil tua -> buang utuh
-        else:
-            break  # satu-satunya <pre> raksasa: biarkan UTUH, paging yg urus
-    return _join(blocks)
+    lines = [progress_line(name, label, done) for name, label, done in items]
+    text = "\n".join(lines)
+    while len(lines) > 1 and len(text) > limit:
+        lines.pop(0)
+        text = "\n".join(lines)
+    return text
 
 
 def is_silence(text: str) -> bool:

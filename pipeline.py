@@ -14,8 +14,8 @@ from collections import OrderedDict
 
 import executor
 from core import CACHE_DIR, CFG, STATE, esc, log, resolve_profile, session_key
-from render import (PREVIEW_TEXT, hermes_footer, is_silence, md_to_html,
-                    model_short, prog_html, split_pages)
+from render import (PREVIEW_TEXT, TERMINAL_TOOLS, hermes_footer, is_silence,
+                    md_to_html, model_short, prog_html, split_pages)
 from tg import SEND_MAX_BYTES, TG
 
 MEDIA_EXTS = {
@@ -419,7 +419,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
         for r_ in st.reasoning:
             if r_ not in reasoning_seen:
                 reasoning_seen.append(r_)
-        # bubble progres: command FULL per halaman, bisa dicopy semua
+        # bubble progres: 1 baris/call (full ada di file lampiran)
         if tool_lines:
             pt = prog_html(tool_lines,
                            max_tools=int(CFG["telegram"].get("max_tools_shown", 6) or 6))
@@ -547,7 +547,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
                        "/model opencode/mimo-v2.6-flash-free, lalu "
                        "kirim ulang fotonya.)")
 
-    # bubble progres: final edit biar status tool akurat (persist, senyap)
+    # bubble progres: final sinkron biar status tool akurat (persist, senyap)
     _max_tools = int(CFG["telegram"].get("max_tools_shown", 6) or 6)
     if tool_lines:
         _prog_deliver(chat_id, prog_ids,
@@ -576,6 +576,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
         head = "✅ <b>Background task complete</b>\n\n"
         for i, pg in enumerate(split_pages(head + full_html)):
             TG.send_html(chat_id, pg, reply_to=reply_to if i == 0 else 0)
+        _maybe_send_bash_log(chat_id, tool_lines)
         log(f"[{key}] bg done {elapsed:.0f}s")
         return
     if mode == "side":
@@ -595,12 +596,66 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
             for i, pg in enumerate(pages):
                 TG.send_html(chat_id, pg,
                              reply_to=reply_to if i == 0 else 0)
+    _maybe_send_bash_log(chat_id, tool_lines)
     STATE.add_usage(key, st.usage["input"], st.usage["output"])
     STATE.note_activity(key)
     log(f"[{key}] done {elapsed:.1f}s out={len(final_text)}c "
         f"tools={len(tool_lines)} tok={st.usage['input']}/{st.usage['output']}")
     if mode == "normal" and final_text and final_text != "(no output)":
         _goal_after_turn(key, chat_id, thread_id, sid, final_text)
+
+
+def _bash_log_file(chat_id, tool_lines) -> tuple:
+    """Tulis SEMUA command bash turn ini ke file txt (FULL + copyable).
+
+    Chat tetap bersih (bubble cuma 1 baris/call); detail lengkap ada di
+    lampiran. Kembalikan (path, jumlah) atau ('', 0)."""
+    cmds = [(n, l, d) for n, l, d in tool_lines.values()
+            if (n or "").lower() in TERMINAL_TOOLS]
+    if not cmds:
+        return ("", 0)
+    try:
+        ts = time.strftime("%y%m%d-%H%M%S")
+        parts = [f"# Bash log {ts} · {len(cmds)} command (full, copyable)",
+                 ""]
+        for i, (n, lab, done) in enumerate(cmds, 1):
+            body = (lab or "").strip() or "(kosong)"
+            parts.append(f"## {i}. {n} · {'done' if done else 'run'}")
+            parts.append(body)
+            parts.append("")
+        text = "\n".join(parts)
+        if len(text) > 200000:
+            text = text[:200000] + "\n\n… [dipotong 200KB]"
+        try:
+            olds = sorted(f for f in os.listdir(CACHE_DIR)
+                          if f.startswith("bash-turn-") and f.endswith(".txt"))
+            for f in olds[:-19]:
+                try:
+                    os.remove(os.path.join(CACHE_DIR, f))
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        path = os.path.join(CACHE_DIR, f"bash-turn-{chat_id}-{ts}.txt")
+        with open(path, "w") as f:
+            f.write(text)
+        return (path, len(cmds))
+    except OSError as e:  # noqa: BLE001
+        log(f"bash-log gagal: {e}")
+        return ("", 0)
+
+
+def _maybe_send_bash_log(chat_id, tool_lines) -> None:
+    """Lampirkan file command-full SENYAP sesudah jawaban (chat bersih)."""
+    path, n = _bash_log_file(chat_id, tool_lines)
+    if not path:
+        return
+    try:
+        TG.send_media(chat_id, path, "document", silent=True,
+                      caption=f"📄 <b>{n}</b> command bash full — "
+                              "buka file buat copy")
+    except Exception as e:  # noqa: BLE001
+        log(f"kirim bash-log gagal: {e}")
 
 
 def _parse_verdict(text: str):
