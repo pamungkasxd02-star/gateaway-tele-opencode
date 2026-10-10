@@ -91,80 +91,35 @@ def progress_line(name: str, label: str, done: bool) -> str:
 
 TERMINAL_TOOLS = {"bash", "shell", "terminal", "execute", "execute_code"}
 
-# Bubble progres: tampilkan N tool terakhir saja (Hermes ringkas).
+# Bubble progres: tampilkan N tool terakhir, utuh per call.
 PROG_MAX_TOOLS = 6
-# Command bash di <pre> (TAP-TO-COPY di Telegram): satu blok per call,
-# max baris & char biar ringkas tapi tetap bisa dicopy utuh bila pendek.
-PROG_CMD_MAX_LINES = 3
-PROG_CMD_MAX_CHARS = 300
+# Pengaman: bubble tak lebih dari N halaman (halaman pertama = terbaru?
+# tidak — yang TERTUA dibuang dulu, jadi yang kelihatan selalu kerjaan
+# terakhir). Satu halaman ~3700 char.
+PROG_MAX_PAGES = 3
 
 
-def _clean_cmd(label: str) -> str:
-    """Rapikan perintah terminal buat <pre>: buang baris kosong/komen,
-    potong max baris/char di batas kata, tambah … bila dipotong."""
+def _full_cmd(label: str) -> str:
+    """Command UTUH buat <pre> (copyable + lengkap, tanpa potong).
+    Hanya rapikan whitespace pinggir tiap baris."""
     lines = [(ln.rstrip()) for ln in (label or "").splitlines()]
-    lines = [ln for ln in lines
-             if ln.strip() and not ln.strip().startswith("#")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
     if not lines:
-        one = " ".join((label or "").split())
-        return _short(one, PROG_CMD_MAX_CHARS)
-    kept = lines[:PROG_CMD_MAX_LINES]
-    txt = "\n".join(ln[:200] for ln in kept)
-    if len(lines) > len(kept):
-        txt += f"\n… (+{len(lines) - len(kept)} baris)"
-    return _short(txt, PROG_CMD_MAX_CHARS)
-
-
-def _short(s: str, cap: int) -> str:
-    """Potong di batas kata + … (jangan motong tengah kata jelek)."""
-    if len(s) <= cap:
-        return s
-    cut = s[:cap - 1].rsplit(" ", 1)[0] or s[:cap - 1]
-    return cut + "…"
-
-
-_COUNT_RE = re.compile(r"\(\+(\d+) baris\)")
-
-
-def _summarize_cmd(label: str) -> tuple:
-    """(kind, teks) buat satu call bash.
-
-    - kind 'pre'  : command pendek -> blok <pre> (TAP-TO-COPY).
-    - kind 'line' : heredoc/script panjang -> SATU baris ringkasan
-      (`✏️ Tulis /tmp/x.py · 120 baris`), bukan dump ratusan baris.
-    """
-    lines = [(ln.rstrip()) for ln in (label or "").splitlines()]
-    lines = [ln for ln in lines if ln.strip()]
-    if not lines:
-        one = " ".join((label or "").split())
-        return ("pre", _short(one, PROG_CMD_MAX_CHARS)) if one else ("", "")
-    first = lines[0]
-    m = _COUNT_RE.search(label or "")
-    extra = f" · +{m.group(1)} baris" if m else ""
-    n_big = bool(m) or len(lines) > 3 or len("\n".join(lines)) > 300
-
-    mh = re.match(r"^\s*cat\s*(>>?)\s*(\S+)\s*<<", first)
-    if mh and n_big:
-        op = "Tambah ke" if mh.group(1) == ">>" else "Tulis"
-        return ("line", f"✏️ {op} <code>{esc(mh.group(2))}</code>{extra}")
-    if re.match(r"^\s*python3?\s+-\s*<<", first) and n_big:
-        return ("line", f"🐍 Script python{extra}")
-    if re.match(r"^\s*(?:bash|sh)\b.*<<", first) and n_big:
-        return ("line", f"💻 Script bash{extra}")
-    if re.match(r"^\s*\S.*<<\s*['\"]?\w+['\"]?\s*$", first) and n_big:
-        return ("line", f"💻 {esc(_short(first, 64))}{extra}")
-    if not n_big:
-        return ("pre", "\n".join(ln[:200] for ln in lines))
-    return ("line", f"💻 {esc(_short(first, 64))}{extra}")
+        return " ".join((label or "").split())
+    return "\n".join(lines)
 
 
 def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) -> str:
-    """Bubble progres: tool terminal = SATU blok <pre> per call.
+    """Bubble progres: tiap call bash = SATU blok <pre> UTUH.
 
-    <pre> bisa TAP-TO-COPY di Telegram (inline quote tidak bisa) —
-    tiap command bash selalu blok sendiri. Call bash berurutan berbagi
-    satu header `💻 bash` biar ringkas; tool lain satu baris ringkas.
-    Hanya N tool terakhir; baris tertua dibuang bila melewati limit.
+    Aturan perfect ala operator: rapi (satu header `💻 bash ×N` per grup
+    berurutan) + lengkap (isi tak dipotong sepatah kata pun) + bisa
+    dicopy (selalu <pre>, bukan quote). Tool lain satu baris ringkas.
+    Hanya N call terakhir; grup tertua dibuang bila lewat
+    PROG_MAX_PAGES halaman.
     """
     items = list(tool_lines.values())
     if max_tools and len(items) > max_tools:
@@ -173,29 +128,47 @@ def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) ->
     for name, label, done in items:
         low = (name or "").lower()
         if low in TERMINAL_TOOLS:
-            kind, txt = _summarize_cmd(label)
-            if kind == "pre" and txt:
-                if blocks and blocks[-1][0] == f"t:{low}":
-                    blocks[-1][1].append(f"<pre>{esc(txt)}</pre>")
-                else:
-                    blocks.append((f"t:{low}",
-                                   [f"{tool_icon(name)} <b>{esc(name or 'tool')}</b>",
-                                    f"<pre>{esc(txt)}</pre>"]))
-            elif txt:
-                blocks.append((f"s:{name}:{label}:{done}", [txt]))
+            cmd = _full_cmd(label) or (name or "tool")
+            if blocks and blocks[-1][0] == f"t:{low}":
+                blocks[-1][1].append(f"<pre>{esc(cmd)}</pre>")
+                n = len(blocks[-1][1]) - 1
+                blocks[-1][1][0] = (
+                    f"{tool_icon(name)} <b>{esc(name or 'tool')} ×{n}</b>")
             else:
-                blocks.append((f"s:{name}:{label}:{done}",
-                               [progress_line(name, label, done)]))
+                blocks.append((f"t:{low}",
+                               [f"{tool_icon(name)} <b>{esc(name or 'tool')}</b>",
+                                f"<pre>{esc(cmd)}</pre>"]))
         else:
             blocks.append((f"s:{name}:{label}:{done}",
                            [progress_line(name, label, done)]))
-    lines = [ln for _, b in blocks for ln in b]
-    text = "\n".join(lines)
-    while len(blocks) > 1 and len(text) > limit:
-        blocks.pop(0)
-        lines = [ln for _, b in blocks for ln in b]
-        text = "\n".join(lines)
-    return text
+    def _join(bs):
+        return "\n".join(ln for _, b in bs for ln in b)
+
+    def _npages(bs):
+        try:
+            return len(split_pages(_join(bs), limit))
+        except Exception:  # noqa: BLE001
+            return 1
+
+    def _retitle(b):
+        key, lines = b
+        if key.startswith("t:") and len(lines) > 1:
+            n = len(lines) - 1
+            base = re.sub(r" ×\d+</b>$", "</b>", lines[0])
+            lines[0] = re.sub(r"</b>$", f" ×{n}</b>", base) if n > 1 else base
+
+    while _npages(blocks) > PROG_MAX_PAGES:
+        if not blocks:
+            break
+        b0 = blocks[0]
+        if len(b0[1]) > 2:
+            b0[1].pop(1)  # buang <pre> tertua, header + sisa utuh
+            _retitle(b0)
+        elif len(blocks) > 1:
+            blocks.pop(0)  # blok kecil tua -> buang utuh
+        else:
+            break  # satu-satunya <pre> raksasa: biarkan UTUH, paging yg urus
+    return _join(blocks)
 
 
 def is_silence(text: str) -> bool:
@@ -536,8 +509,9 @@ def md_to_html(text: str) -> str:
         return _html.escape(text or "")
 
 
-def split_pages(html: str, limit: int = PAGE_SIZE) -> list:
-    """Bagi HTML per halaman tanpa motong blok <pre>; bernomor bila >1.
+def split_pages(html: str, limit: int = PAGE_SIZE, number: bool = True) -> list:
+    """Bagi HTML per halaman tanpa motong blok <pre>; bernomor bila >1
+    (number=False untuk bubble progres yang diedit in-place).
 
     Tiap halaman divalidasi via _balance_or_plain — halaman yang
     terpotong di tengah tag (b/i/a/blockquote) jatuh ke plain aman,
@@ -595,7 +569,8 @@ def split_pages(html: str, limit: int = PAGE_SIZE) -> list:
                 carry = False
             balanced.append(_valid(p))
         pages = balanced
-        n = len(pages)
-        pages = [f"{p} ({k}/{n})" for k, p in enumerate(pages, 1)]
+        if number:
+            n = len(pages)
+            pages = [f"{p} ({k}/{n})" for k, p in enumerate(pages, 1)]
         return pages
     return [_valid(p) for p in pages]

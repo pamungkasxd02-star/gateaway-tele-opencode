@@ -254,6 +254,49 @@ DILARANG menjawab dari ingatan/instruksi/contoh — hanya dari HASIL perintah di
 DILARANG bilang "tidak ada / tidak terdaftar / tidak bisa / kirim output dulu".
 Data > omongan. Klaim tanpa cek = salah."""
 
+
+def _prog_deliver(chat_id, ids: list, html: str, silent: bool) -> None:
+    """Kirim/edit bubble progres yang BISA multi-halaman (command full).
+
+    Halaman 1 diedit in-place; halaman ekstra dikirim/diedit/dihapus
+    mengikuti — semua halaman tetap <pre> valid + copyable.
+    """
+    try:
+        pages = split_pages(html, 3700, number=False)
+    except Exception:  # noqa: BLE001
+        pages = [html]
+    if not pages:
+        return
+    if ids and ids[0]:
+        if not TG.edit_html(chat_id, ids[0], pages[0]):
+            mid = TG.send_html(chat_id, pages[0], silent=silent)
+            if mid:
+                ids[0] = mid
+    else:
+        mid = TG.send_html(chat_id, pages[0], silent=silent)
+        if mid:
+            if ids:
+                ids[0] = mid
+            else:
+                ids.append(mid)
+    for i, pg in enumerate(pages[1:], start=1):
+        if i < len(ids) and ids[i]:
+            TG.edit_html(chat_id, ids[i], pg)
+        else:
+            mid = TG.send_html(chat_id, pg, silent=silent)
+            if mid:
+                if i < len(ids):
+                    ids[i] = mid
+                else:
+                    ids.append(mid)
+    while len(ids) > len(pages):
+        extra = ids.pop()
+        try:
+            TG.call("deleteMessage", chat_id=chat_id, message_id=extra)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def run_agent(key: str, chat_id, thread_id, prompt: str,
               mode: str = "normal", reply_to: int = 0,
               files: list = None, model_override: str = "",
@@ -361,7 +404,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
     last_edit = [0.0]
     last_render = [PREVIEW_TEXT]  # sama kayak bubble awal -> edit pertama skip
     last_prog = [""]    # bubble progres (HTML), diedit in place ala Hermes
-    prog_id = [0]
+    prog_ids: list = []  # id pesan progres (bisa >1 halaman bila full)
     ctx_len = _model_ctx_cached(model)
 
     def render(st):
@@ -376,17 +419,14 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
         for r_ in st.reasoning:
             if r_ not in reasoning_seen:
                 reasoning_seen.append(r_)
-        # bubble progres ala Hermes: pesan terpisah, blok <pre> terminal
+        # bubble progres: command FULL per halaman, bisa dicopy semua
         if tool_lines:
             pt = prog_html(tool_lines,
                            max_tools=int(CFG["telegram"].get("max_tools_shown", 6) or 6))
             if pt != last_prog[0]:
                 last_prog[0] = pt
-                if prog_id[0]:
-                    TG.edit_html(chat_id, prog_id[0], pt)
-                else:
-                    prog_id[0] = TG.send_html(chat_id, pt,
-                                              silent=_stream_silent())
+                _prog_deliver(chat_id, prog_ids, pt,
+                              silent=_stream_silent())
         # bubble jawaban: teks streaming saja (plain), tanpa tool block.
         # Kalau model diam >30 dtk, tampilkan elapsed biar ketahuan hidup.
         body = "\n".join(st.texts).strip()
@@ -458,8 +498,9 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
     if is_silence(final_text):
         if msg_id:
             TG.call("deleteMessage", chat_id=chat_id, message_id=msg_id)
-        if prog_id[0]:
-            TG.call("deleteMessage", chat_id=chat_id, message_id=prog_id[0])
+        for pid_ in prog_ids:
+            if pid_:
+                TG.call("deleteMessage", chat_id=chat_id, message_id=pid_)
         log(f"[{key}] silence token -> tidak dikirim")
         return
 
@@ -508,11 +549,10 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
 
     # bubble progres: final edit biar status tool akurat (persist, senyap)
     _max_tools = int(CFG["telegram"].get("max_tools_shown", 6) or 6)
-    if tool_lines and prog_id[0]:
-        TG.edit_html(chat_id, prog_id[0], prog_html(tool_lines, max_tools=_max_tools))
-    elif tool_lines and msg_id:
-        prog_id[0] = TG.send_html(chat_id, prog_html(tool_lines, max_tools=_max_tools),
-                                  silent=_stream_silent())
+    if tool_lines:
+        _prog_deliver(chat_id, prog_ids,
+                      prog_html(tool_lines, max_tools=_max_tools),
+                      silent=_stream_silent())
 
     # bubble jawaban: teks bersih + footer, TANPA tool block (tools sudah
     # di bubble progres — persis Hermes)
