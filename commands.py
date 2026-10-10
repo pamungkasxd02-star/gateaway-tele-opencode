@@ -359,10 +359,21 @@ def handle_hermes(c: str, chat_id: int, thread_id, user_id: int,
         if not sid:
             send_rich(chat_id, "Belum ada sesi — kirim pesan dulu.")
             return True
+        if not executor.COMPACT_OK:
+            send_rich(chat_id,
+                      "Compact mati di server model ini. "
+                      "<code>/new</code> buat sesi segar — "
+                      "konteks penuh memang bikin jawaban hancur.")
+            return True
         send_rich(chat_id, "Compacting context…")
         r = executor.compact(sid)
         if executor.is_err(r):
-            send_rich(chat_id, f"❌ compact gagal: {esc(r.get('__err', '')[:150])}")
+            if not executor.COMPACT_OK:
+                send_rich(chat_id,
+                          "Compact mati di server model ini. "
+                          "<code>/new</code> buat sesi segar.")
+            else:
+                send_rich(chat_id, f"❌ compact gagal: {esc(r.get('__err', '')[:150])}")
         else:
             send_rich(chat_id, "✅ Context compacted — riwayat diringkas, "
                                "fak penting dipertahankan.")

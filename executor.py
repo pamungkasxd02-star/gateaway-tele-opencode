@@ -255,8 +255,16 @@ def revert_clear(sid: str):
     return api("delete", f"/api/session/{sid}/revert")
 
 
+COMPACT_OK = True  # False bila server bilang compact tak tersedia
+
+
 def compact(sid: str):
-    return api("post", f"/api/session/{sid}/compact", {})
+    global COMPACT_OK
+    r = api("post", f"/api/session/{sid}/compact", {})
+    if is_err(r) and "not available" in str(r.get("__err", "")).lower():
+        COMPACT_OK = False  # server/model tak dukung compact ->
+        # pemanggil harus sarankan /new, bukan retry
+    return r
 
 
 def run_command(sid: str, name: str, text: str = ""):
@@ -415,6 +423,8 @@ class TurnState:
         self.reasoning: list = []        # thinking (kalau model kasih plain)
         self.usage = {"input": 0, "output": 0, "reasoning": 0}
         self.last_input = 0              # token input call terakhir (konteks)
+        self.peak = 0  # MAX input 1 message = ukuran konteks beneran.
+        # (JANGAN sum: server lapor per-message, sum = bengkak 484%.)
         self.error = ""
         self.done = False
         self.sid = ""
@@ -519,6 +529,8 @@ def parse_messages(msgs: list, after_time: float,
                     st.usage[k] += v if isinstance(v, int) else 0
                 if isinstance(tok.get("input"), int):
                     st.last_input = tok["input"]   # occupancy call terakhir
+                    if tok["input"] > st.peak:
+                        st.peak = tok["input"]
                 content = m.get("content")
                 if not isinstance(content, list):
                     continue
@@ -547,6 +559,9 @@ def parse_messages(msgs: list, after_time: float,
                         for k in ("input", "output", "reasoning"):
                             v = tok.get(k)
                             st.usage[k] += v if isinstance(v, int) else 0
+                        if isinstance(tok.get("input"), int) \
+                                and tok["input"] > st.peak:
+                            st.peak = tok["input"]
                     else:
                         # Tipe baru (file/image/snapshot/dll): jangan buang —
                         # ambil teks/uri yang ada supaya jawaban tetap FULL.

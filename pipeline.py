@@ -585,13 +585,10 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
     if show_reasoning and reasoning_seen:
         r_txt = "\n".join(reasoning_seen)[-1200:]
         blocks.append(f"<blockquote>{esc(r_txt)}</blockquote>")
-    # Token konteks = total SESI (akumulasi + turn ini), bukan cuma
-    # laporan per-message server (kadang 0) — footer % jujur.
-    _u = STATE.get_usage(key)
-    _ctx_tokens = (_u.get("input", 0) + _u.get("output", 0)
-                   + st.usage["input"] + st.usage["output"])
-    if not _ctx_tokens:
-        _ctx_tokens = st.last_input
+    # Token konteks = PEAK sesi (max input 1 message, diakumulasi max),
+    # bukan sum (server lapor per-message -> sum bengkak 484%).
+    STATE.set_ctx_peak(key, st.peak)
+    _ctx_tokens = max(STATE.get_ctx_peak(key), st.peak, st.last_input)
     footer = ""
     if CFG["telegram"].get("footer"):
         footer = hermes_footer(model=model,
@@ -606,8 +603,14 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
         except (TypeError, ZeroDivisionError):
             pct = 0
         if pct >= 70:
-            blocks.append("⚠️ Konteks <b>%d%%</b> — sesi gemuk, jawaban bisa "
-                          "hancur. <code>/compress</code> biar rapi lagi." % pct)
+            if executor.COMPACT_OK:
+                blocks.append(
+                    "⚠️ Konteks <b>%d%%</b> — sesi gemuk, jawaban bisa "
+                    "hancur. <code>/compress</code> biar rapi lagi." % pct)
+            else:
+                blocks.append(
+                    "⚠️ Konteks <b>%d%%</b> — compact mati di server. "
+                    "<code>/new</code> buat sesi segar." % pct)
     full_html = "\n\n".join(b for b in blocks if b)
     pages = split_pages(full_html)
 
@@ -655,6 +658,8 @@ def _maybe_auto_compact(key: str, chat_id, sid: str, last_input: int,
         ac = CFG.get("auto_compact", {}) or {}
         if not ac.get("enabled", True):
             return
+        if not executor.COMPACT_OK:
+            return  # server tak dukung compact -> nudge /new yang urus
         if not ctx_len or not last_input:
             return
         pct = round(last_input / ctx_len * 100)
@@ -672,10 +677,14 @@ def _maybe_auto_compact(key: str, chat_id, sid: str, last_input: int,
             TG.send(chat_id, f"🧹 Konteks {pct}% — auto-compress jalan…")
             r = executor.compact(sid)
             if executor.is_err(r):
-                TG.send(chat_id,
-                        "⚠️ Auto-compress gagal: "
-                        f"{esc(r.get('__err', '')[:120])} — "
-                        "coba <code>/compress</code> manual.")
+                if not executor.COMPACT_OK:
+                    TG.send(chat_id, "Compact mati di server model ini. "
+                                     "<code>/new</code> buat sesi segar.")
+                else:
+                    TG.send(chat_id,
+                            "⚠️ Auto-compress gagal: "
+                            f"{esc(r.get('__err', '')[:120])} — "
+                            "coba <code>/compress</code> manual.")
             else:
                 TG.send(chat_id, "✅ Auto-compress beres — konteks segar, "
                                  "lanjut chat rapi lagi.")

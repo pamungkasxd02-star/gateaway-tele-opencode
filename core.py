@@ -254,6 +254,7 @@ class State:
                 self.data["sessions"][key] = sid
                 self.data.setdefault("usage", {})[key] = {"input": 0,
                                                           "output": 0}
+                self.data.setdefault("ctxpeak", {})[key] = 0
             self.save()
 
     def clear_session(self, key: str) -> None:
@@ -261,6 +262,7 @@ class State:
             self.data["sessions"].pop(key, None)
             self.data.setdefault("usage", {})[key] = {"input": 0,
                                                       "output": 0}
+            self.data.setdefault("ctxpeak", {})[key] = 0
             self.save()
 
     def list_sessions(self):
@@ -507,6 +509,21 @@ class State:
         with self.lock:
             self.data.setdefault("autocompact", {})[key] = ts
             self.save()
+
+    # -- peak konteks per sesi (MAX input 1 message, bukan sum) ----------
+    def get_ctx_peak(self, key: str) -> int:
+        with self.lock:
+            try:
+                return int(self.data.get("ctxpeak", {}).get(key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+    def set_ctx_peak(self, key: str, val: int) -> None:
+        with self.lock:
+            cur = self.data.setdefault("ctxpeak", {}).get(key, 0) or 0
+            if int(val or 0) > int(cur):
+                self.data["ctxpeak"][key] = int(val)
+                self.save()
 
     # -- cron jobs ----------------------------------------------------------
     def cron_add(self, job: dict) -> str:
