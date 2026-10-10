@@ -90,6 +90,8 @@ DEFAULT_CFG = {
     "cron": {"enabled": True, "poll_sec": 30, "max_jobs": 50},
     "goals": {"max_turns": 20},
     "models": {"ctx_1m": True},  # seragamkan context display semua model ke 1M
+    "auto_compact": {"enabled": True, "threshold_pct": 80,
+                     "cooldown_min": 30},
     "vision": {"fallback_model": "opencode/mimo-v2.6-flash-free"},
     "bot_loop_guard": {"enabled": True, "max_events": 20,
                        "window_seconds": 300, "cooldown_seconds": 600},
@@ -488,6 +490,16 @@ class State:
             if buf:
                 self.save()
             return buf
+
+    # -- auto-compress cooldown per sesi ---------------------------------
+    def get_autocompact(self, key: str) -> float:
+        with self.lock:
+            return float(self.data.get("autocompact", {}).get(key, 0) or 0)
+
+    def set_autocompact(self, key: str, ts: float) -> None:
+        with self.lock:
+            self.data.setdefault("autocompact", {})[key] = ts
+            self.save()
 
     # -- cron jobs ----------------------------------------------------------
     def cron_add(self, job: dict) -> str:

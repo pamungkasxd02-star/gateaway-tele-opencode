@@ -605,6 +605,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
                 TG.send_html(chat_id, pg,
                              reply_to=reply_to if i == 0 else 0)
     _maybe_send_bash_log(chat_id, tool_lines)
+    _maybe_auto_compact(key, chat_id, sid, st.last_input, ctx_len)
     STATE.add_usage(key, st.usage["input"], st.usage["output"])
     STATE.note_activity(key)
     log(f"[{key}] done {elapsed:.1f}s out={len(final_text)}c "
@@ -664,6 +665,48 @@ def _maybe_send_bash_log(chat_id, tool_lines) -> None:
                               "buka file buat copy")
     except Exception as e:  # noqa: BLE001
         log(f"kirim bash-log gagal: {e}")
+
+
+def _maybe_auto_compact(key: str, chat_id, sid: str, last_input: int,
+                        ctx_len: int) -> None:
+    """Auto-compress bila konteks melewati ambang (default 80%).
+
+    Jalan DIANTRE sesudah turn ini (serial per chat via enqueue —
+    tak balapan dengan turn berikut). Cooldown per sesi + skip saat
+    goal aktif. User diberitahu mulai & hasilnya.
+    """
+    try:
+        ac = CFG.get("auto_compact", {}) or {}
+        if not ac.get("enabled", True):
+            return
+        if not ctx_len or not last_input:
+            return
+        pct = round(last_input / ctx_len * 100)
+        if pct < int(ac.get("threshold_pct", 80) or 80):
+            return
+        g = STATE.get_goal(key)
+        if g and g.get("status") == "active":
+            return
+        cool = int(ac.get("cooldown_min", 30) or 30) * 60
+        if time.time() - STATE.get_autocompact(key) < cool:
+            return
+        STATE.set_autocompact(key, time.time())
+
+        def _job():
+            TG.send(chat_id, f"🧹 Konteks {pct}% — auto-compress jalan…")
+            r = executor.compact(sid)
+            if executor.is_err(r):
+                TG.send(chat_id,
+                        "⚠️ Auto-compress gagal: "
+                        f"{esc(r.get('__err', '')[:120])} — "
+                        "coba <code>/compress</code> manual.")
+            else:
+                TG.send(chat_id, "✅ Auto-compress beres — konteks segar, "
+                                 "lanjut chat rapi lagi.")
+        enqueue(key, _job)
+        log(f"[{key}] auto-compact diantre ({pct}%)")
+    except Exception as e:  # noqa: BLE001
+        log(f"[{key}] auto-compact skip: {e}")
 
 
 def _parse_verdict(text: str):
