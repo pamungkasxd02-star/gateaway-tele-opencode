@@ -14,8 +14,8 @@ from collections import OrderedDict
 
 import executor
 from core import CACHE_DIR, CFG, STATE, esc, log, resolve_profile, session_key
-from render import (PREVIEW_TEXT, hermes_footer, is_silence, md_to_html,
-                    model_short, prog_html, split_pages)
+from render import (PREVIEW_TEXT, fmt_tokens, hermes_footer, is_silence,
+                    md_to_html, model_short, prog_html, split_pages)
 from tg import SEND_MAX_BYTES, TG
 
 MEDIA_EXTS = {
@@ -407,6 +407,24 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
     prog_ids: list = []  # id pesan progres (bisa >1 halaman bila full)
     ctx_len = _model_ctx_cached(model)
 
+    def _live_ctx(st) -> str:
+        """Satu baris konteks REALTIME buat bubble progres
+        (`Konteks 12%`, update tiap detik ikut token berjalan)."""
+        try:
+            u = STATE.get_usage(key)
+            tot = (u.get("input", 0) + u.get("output", 0)
+                   + st.usage["input"] + st.usage["output"])
+            if not tot and getattr(st, "last_input", 0):
+                tot = st.last_input
+            if not tot:
+                return ""
+            if ctx_len:
+                pct = max(0, min(100, round(tot / ctx_len * 100)))
+                return f"Konteks {pct}%"
+            return f"Konteks {fmt_tokens(tot)}"
+        except Exception:  # noqa: BLE001
+            return ""
+
     def render(st):
         if not msg_id:
             return
@@ -419,10 +437,13 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
         for r_ in st.reasoning:
             if r_ not in reasoning_seen:
                 reasoning_seen.append(r_)
-        # bubble progres: 1 baris/call (full ada di file lampiran)
+        # bubble progres: 1 baris/call + konteks realtime
         if tool_lines:
             pt = prog_html(tool_lines,
                            max_tools=int(CFG["telegram"].get("max_tools_shown", 6) or 6))
+            lc = _live_ctx(st)
+            if lc:
+                pt += "\n" + lc
             if pt != last_prog[0]:
                 last_prog[0] = pt
                 _prog_deliver(chat_id, prog_ids, pt,
@@ -550,8 +571,11 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
     # bubble progres: final sinkron biar status tool akurat (persist, senyap)
     _max_tools = int(CFG["telegram"].get("max_tools_shown", 6) or 6)
     if tool_lines:
-        _prog_deliver(chat_id, prog_ids,
-                      prog_html(tool_lines, max_tools=_max_tools),
+        _final_prog = prog_html(tool_lines, max_tools=_max_tools)
+        _lc = _live_ctx(st)
+        if _lc:
+            _final_prog += "\n" + _lc
+        _prog_deliver(chat_id, prog_ids, _final_prog,
                       silent=_stream_silent())
 
     # bubble jawaban: teks bersih + footer, TANPA tool block (tools sudah
