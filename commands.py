@@ -309,7 +309,9 @@ def handle_hermes(c: str, chat_id: int, thread_id, user_id: int,
         elif executor.is_err(r):
             send_rich(chat_id, f"❌ undo gagal: {esc(r.get('__err', '')[:150])}")
         else:
-            send_rich(chat_id, "✅ Undo — revert terakhir dibersihkan.")
+            send_rich(chat_id, "✅ Undo — permintaan revert dikirim ke server. "
+                               "(Riwayat chat tetap; <code>/new</code> buat "
+                               "konteks segar.)")
         return True
 
     if c == "whoami":
@@ -664,7 +666,13 @@ def handle_extra(c: str, chat_id: int, thread_id, user_id: int,
                     note = ("\nServer tak dukung ganti mid-session — "
                             "tersimpan, <code>/new</code> untuk pakai.")
                 elif executor.is_err(r):
-                    note = f"\n⚠️ {esc(r.get('__err', '')[:120])}"
+                    # sesi kosong bikin server 500; switch dicoba lagi
+                    # otomatis tiap turn (pipeline) -> janjiin pending
+                    if not executor.session_info(sid):
+                        note = ("\nTersimpan — aktif otomatis di turn "
+                                "berikutnya.")
+                    else:
+                        note = f"\n⚠️ {esc(r.get('__err', '')[:120])}"
             send_rich(chat_id, f"✅ Model: <code>{esc(args[1])}</code>{note}")
         return True
 
@@ -688,7 +696,11 @@ def handle_extra(c: str, chat_id: int, thread_id, user_id: int,
                     note = ("\nServer tak dukung ganti mid-session — "
                             "tersimpan, <code>/new</code> untuk pakai.")
                 elif executor.is_err(r):
-                    note = f"\n⚠️ {esc(r.get('__err', '')[:120])}"
+                    if not executor.session_info(sid):
+                        note = ("\nTersimpan — aktif otomatis di turn "
+                                "berikutnya.")
+                    else:
+                        note = f"\n⚠️ {esc(r.get('__err', '')[:120])}"
             send_rich(chat_id, f"✅ Agent: <code>{esc(args[1])}</code>{note}")
         return True
 

@@ -273,7 +273,9 @@ def interrupt(sid: str):
 
 
 def revert_clear(sid: str):
-    return api("delete", f"/api/session/{sid}/revert")
+    """Undo pertukaran terakhir. Path beneran v1.18: POST .../revert/clear
+    (204 kosong). DELETE .../revert tak ada (HTML fallback)."""
+    return api("post", f"/api/session/{sid}/revert/clear", {})
 
 
 COMPACT_OK = True  # False bila server bilang compact tak tersedia
