@@ -81,9 +81,15 @@ def _handle_async(u: dict) -> None:
 
 
 def run_polling() -> None:
-    offset = TG.drop_pending() \
-        if CFG["telegram"].get("drop_pending_on_cold_boot", True) else 0
+    if CFG["telegram"].get("drop_pending_on_cold_boot", True):
+        offset = TG.drop_pending()
+    else:
+        # Lanjut dari offset tersimpan — update yang sudah diproses
+        # tidak dikirim ulang Telegram (anti ngulang pas restart).
+        offset = STATE.get_offset()
+    STATE.set_offset(offset)
     log(f"polling start offset={offset}")
+    _fail_streak = 0
     while True:
         try:
             from pipeline import _shutdown  # noqa: PLC0415
@@ -92,10 +98,17 @@ def run_polling() -> None:
                 return
             r = TG.get_updates(offset, CFG["poll_timeout"])
             if r and r.get("ok"):
+                _fail_streak = 0
                 for u in r["result"]:
                     offset = u["update_id"] + 1
+                    STATE.set_offset(offset)
                     threading.Thread(target=_handle_async, args=(u,),
                                      daemon=True).start()
+            else:
+                # Telegram transient (502/timeout/None): jangan tight-loop
+                # yang membanjiri log. Backoff 2-10s.
+                _fail_streak += 1
+                time.sleep(min(2 * _fail_streak, 10))
         except KeyboardInterrupt:
             log("stop")
             return

@@ -158,7 +158,7 @@ def nav_content(page: str, chat_id, thread_id):
                  f"<code>{jid}</code> [{esc(j.get('expr', ''))}] "
                  f"{esc((j.get('prompt') or '')[:50])}"
                  for jid, j in sorted(jobs.items())]
-        return ("⏰ <b>Cron jobs</b>\n" + "<br>".join(lines)
+        return ("⏰ <b>Cron jobs</b>\n" + "\n".join(lines)
                 + "\n\n<code>/cron rm &lt;id&gt;</code>", kb)
 
     if page == "limits":
@@ -819,7 +819,7 @@ def handle_cron(chat_id: int, thread_id, user_id: int, args: list) -> None:
             st = "✅" if j.get("enabled", True) else "⏸️"
             lines.append(f"{st} <code>{jid}</code> [{esc(j.get('expr',''))}] "
                          f"{esc((j.get('prompt') or '')[:60])}")
-        send_rich(chat_id, "<b>Cron jobs</b>\n" + "<br>".join(lines) +
+        send_rich(chat_id, "<b>Cron jobs</b>\n" + "\n".join(lines) +
                   "\n\n<code>/cron rm &lt;id&gt;</code> · "
                   "<code>/cron off &lt;id&gt;</code> · "
                   "<code>/cron on &lt;id&gt;</code>")
@@ -982,7 +982,7 @@ def handle_loop(chat_id: int, thread_id, user_id: int, args: list) -> None:
         lines = [f"{'✅' if j.get('enabled', True) else '⏸️'} "
                  f"<code>{jid}</code> [{esc(j.get('expr', ''))}] "
                  f"{esc((j.get('prompt') or '')[:50])}" for jid, j in mine.items()]
-        send_rich(chat_id, "<b>Loops</b>\n" + "<br>".join(lines) +
+        send_rich(chat_id, "<b>Loops</b>\n" + "\n".join(lines) +
                   "\n\n<code>/loop stop &lt;id&gt;</code>")
         return
     if low.startswith("stop ") or low.startswith("rm "):
@@ -1030,7 +1030,7 @@ def handle_heartbeat(chat_id: int, thread_id, user_id: int,
             if j.get("kind") == "heartbeat"
             and str(j.get("chat_id")) == str(chat_id)}
     if not rest or low in ("status", "list"):
-        send_rich(chat_id, ("<b>Heartbeat</b>\n" + "<br>".join(
+        send_rich(chat_id, ("<b>Heartbeat</b>\n" + "\n".join(
             f"{'✅' if j.get('enabled', True) else '⏸️'} <code>{jid}</code> "
             f"[{esc(j.get('expr', ''))}]" for jid, j in mine.items())
             + "\n\n<code>/heartbeat stop &lt;id&gt;</code>") if mine else

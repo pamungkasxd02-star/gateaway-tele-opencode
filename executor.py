@@ -32,12 +32,13 @@ import urllib.request
 HOST = "127.0.0.1"
 PORT = 4097
 BASE = f"http://{HOST}:{PORT}"
+API_V2 = True  # False on v1 servers (prompt key instead of text)
 GW_DIR = os.path.dirname(os.path.abspath(__file__))
 PW_FILE = os.path.join(GW_DIR, ".server_password")
 PROXY_URL = "http://127.0.0.1:8118"
 NO_PROXY = "localhost,127.0.0.1,::1"
 OPENCODE = "opencode"
-CWD = os.path.expanduser("~")
+CWD = "/opt/ops/yatim-full"
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +69,17 @@ def _server_env(proxy_on: bool) -> dict:
 
 
 def server_up() -> bool:
+    global API_V2
     d = api("get", "/api/info", timeout=15)
-    return d is not None and not is_err(d)
+    if d is not None and not is_err(d):
+        API_V2 = True
+        return True
+    # v1 compat: /api/info serves web UI HTML -> fallback list endpoint
+    d = api("get", "/api/session", timeout=15)
+    if d is not None and not is_err(d):
+        API_V2 = False
+        return True
+    return False
 
 
 PID_FILE = os.path.join(GW_DIR, ".server_pid")
@@ -391,7 +401,25 @@ def _brief_scalar(inp: dict, keys: list) -> str:
     for k in keys:
         v = inp.get(k)
         if isinstance(v, str) and v.strip():
-            return v.strip().replace("\n", " ")[:100]
+            return v.strip().replace("\n", " ")[:120]
+    return ""
+
+
+def _terminal_label(inp: dict) -> str:
+    """Label bash rapi ala Hermes: pertahankan baris (max 4),
+    potong rapi per baris — jangan jadikan satu baris hancur."""
+    for k in ("command", "script", "cmd", "code"):
+        v = inp.get(k)
+        if isinstance(v, str) and v.strip():
+            lines = [ln.rstrip() for ln in v.strip().splitlines()]
+            lines = [ln for ln in lines if ln.strip()]
+            if not lines:
+                continue
+            kept = lines[:4]
+            txt = "\n".join(ln[:180] for ln in kept)
+            if len(lines) > len(kept):
+                txt += f"\n… (+{len(lines) - len(kept)} baris)"
+            return txt[:300]
     return ""
 
 
@@ -404,7 +432,7 @@ def _part_label(part: dict) -> str:
     label = ""
     if name in ("bash", "shell", "terminal", "run", "execute",
                 "execute_code"):
-        label = _brief_scalar(inp, ["command", "script", "cmd", "code"])
+        label = _terminal_label(inp)
     elif name in ("read", "view"):
         label = _brief_scalar(inp, ["filePath", "path", "file_path"])
     elif name in ("write", "edit", "patch", "create", "apply_patch"):
@@ -423,21 +451,31 @@ def _part_label(part: dict) -> str:
         label = _brief_scalar(inp, ["content", "todos"])
     if not label:
         for v in inp.values():
-            if isinstance(v, str) and v.strip() and len(v.strip()) < 80:
-                label = v.strip().replace("\n", " ")[:100]
+            if isinstance(v, str) and v.strip() and len(v.strip()) < 120:
+                label = v.strip().replace("\n", " ")[:120]
                 break
     if not label:
         label = name or "tool"
     return label
 
 
-def parse_messages(msgs: list, after_time: float) -> TurnState:
+def parse_messages(msgs: list, after_time: float,
+                   ignore_ids: set = None) -> TurnState:
+    """Rangkum message jadi TurnState. Hanya message BARU yang dihitung:
+
+    - id di ignore_ids (baseline sebelum POST) selalu dilewati — anti
+      stale/ngeloop jawaban lama walau timestamp kacau;
+    - sisanya difilter created >= after_time seperti sebelumnya.
+    """
     st = TurnState()
     if not isinstance(msgs, list):
         return st
+    ign = ignore_ids or set()
     for m in msgs:
         try:
             if not isinstance(m, dict):
+                continue
+            if m.get("id") in ign:
                 continue
             t = m.get("type")
             tm = m.get("time")
@@ -487,6 +525,16 @@ def parse_messages(msgs: list, after_time: float) -> TurnState:
                         for k in ("input", "output", "reasoning"):
                             v = tok.get(k)
                             st.usage[k] += v if isinstance(v, int) else 0
+                    else:
+                        # Tipe baru (file/image/snapshot/dll): jangan buang —
+                        # ambil teks/uri yang ada supaya jawaban tetap FULL.
+                        txt = (p.get("text") or p.get("content")
+                               or p.get("uri") or p.get("url")
+                               or p.get("filename") or "")
+                        if isinstance(txt, str) and txt.strip():
+                            txt = txt.strip()
+                            if txt not in st.texts:
+                                st.texts.append(txt)
                 if m.get("finish") in ("stop", "error", "abort", "max_tokens",
                                        "length", "end_turn"):
                     st.done = True
@@ -495,19 +543,75 @@ def parse_messages(msgs: list, after_time: float) -> TurnState:
     return st
 
 
+def _baseline(sid: str) -> tuple:
+    """Snapshot message BELUM-ada-sebelum-POST: ({id}, max_created).
+
+    Best-effort, timeout pendek — gagal = baseline kosong (caller tetap
+    jalan, hanya tanpa proteksi stale).
+    """
+    try:
+        d = api("get", f"/api/session/{sid}/message", timeout=15)
+        msgs = []
+        if isinstance(d, list):
+            msgs = d
+        elif isinstance(d, dict):
+            msgs = d.get("messages") or d.get("data") or []
+        ids, mx = set(), 0
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            if m.get("id"):
+                ids.add(m.get("id"))
+            tm = m.get("time")
+            c = tm.get("created", 0) if isinstance(tm, dict) else 0
+            if isinstance(c, (int, float)) and c > mx:
+                mx = c
+        return ids, mx
+    except Exception:  # noqa: BLE001
+        return set(), 0
+
+
 def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
-             interval: float = 2.0, no_output_limit: int = 420,
+             interval: float = 1.0, no_output_limit: int = 420,
              files: list = None):
     """Kirim prompt lalu polling sampai turn selesai. Balikin TurnState.
 
+    Anti-ngeloop: baseline id + after_time dari respons POST
+    (server kirim `timeCreated` top-level, BUKAN `time.created` —
+    salah baca = user_time 0 = langsung pulang bawa jawaban LAMA).
     Watchdog: diam total (tanpa teks/tool) lebih dari no_output_limit
     dianggap macet — stop nunggu, balikin error jelas (user tak staring
     "Thinking…" selamanya).
     """
-    body = {"text": prompt}
+    def _post(body):
+        return api("post", f"/api/session/{sid}/prompt", body, timeout=120)
+
+    base_ids, base_max = _baseline(sid)
+    body = {"text": prompt} if API_V2 else {"prompt": {"text": prompt}}
     if files:
         body["files"] = files
-    r = api("post", f"/api/session/{sid}/prompt", body, timeout=120)
+    r = _post(body)
+    # Compat v1/v2: server lama minta {"prompt":...}, server baru {"text":...}.
+    # Kalau kena "Missing key at [prompt/text]", coba bentuk satunya sekali.
+    if is_err(r):
+        msg = str(r.get("__err", ""))
+        low = msg.lower()
+        if "missing key" in low and ("prompt" in low or "text" in low):
+            alt = {"prompt": {"text": prompt}} if API_V2 else {"text": prompt}
+            if files:
+                alt["files"] = files
+            r2 = _post(alt)
+            if not is_err(r2):
+                r = r2
+            else:
+                # simpan error alt yang lebih informatif
+                r = r2
+        elif ("respons api rusak" in low or "timeout" in low
+              or "connection" in low or "temporary failure" in low):
+            time.sleep(2)
+            r2 = _post(body)
+            if not is_err(r2):
+                r = r2
     if is_err(r):
         st = TurnState()
         st.error = r.get("__err", "gagal kirim prompt")
@@ -515,29 +619,40 @@ def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
         return st
     tm = (r or {}).get("time")
     user_time = (tm.get("created", 0) if isinstance(tm, dict) else 0) or 0
+    if not user_time:
+        # Bentuk respons sukses server: {"id": "msg_...", "timeCreated": ...}
+        tc = (r or {}).get("timeCreated", 0)
+        if isinstance(tc, (int, float)) and tc > 0:
+            user_time = tc
+    if not user_time:
+        user_time = base_max  # fallback: semua yg lama ke-exclude via id juga
     t0 = time.time()
     last = None
     while time.time() - t0 < timeout:
         time.sleep(interval)
-        st = parse_messages(messages(sid), user_time)
+        st = parse_messages(messages(sid), user_time, base_ids)
         if on_update and st != last:
             last = st
             try:
                 on_update(st)
             except Exception:  # noqa: BLE001
                 pass  # render gagal jangan bunuh polling turn
-        if st.done:
+        if st.done and (st.texts or st.tools or st.error):
             return st
+        if st.done:
+            # done tanpa konten baru = sinyal basi (harusnya tak terjadi
+            # berkat baseline) — jangan pulang, tunggu konten beneran.
+            st.done = False
         if not st.texts and not st.tools \
                 and time.time() - t0 > min(no_output_limit, timeout):
-            st = parse_messages(messages(sid), user_time)
+            st = parse_messages(messages(sid), user_time, base_ids)
             if not st.texts and not st.tools and not st.done:
                 st.error = (st.error or
                             f"model diam {no_output_limit}s tanpa output "
                             "(macet/lamban). Coba /retry atau /model lain.")
                 st.done = True
                 return st
-    st = parse_messages(messages(sid), user_time)
+    st = parse_messages(messages(sid), user_time, base_ids)
     st.error = st.error or "timeout"
     st.done = True
     return st

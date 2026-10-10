@@ -19,6 +19,9 @@ TOKEN = CFG["telegram"]["bot_token"]
 SEND_MAX_BYTES = 48 * 1024 * 1024  # limit Bot API 50MB, kasih headroom
 
 
+_last_transient_log = {"ts": 0.0}
+
+
 class Telegram:
     def __init__(self) -> None:
         base = (CFG["telegram"].get("base_url") or "").rstrip("/")
@@ -67,13 +70,43 @@ class Telegram:
                                  _retried=True, **params)
             if e.code != 429:
                 desc = str(body.get("description", ""))
-                # "not modified" = no-op rutin (edit dgn konten identik),
-                # bukan error — jangan penuhi log
-                if "not modified" not in desc:
+                low = desc.lower()
+                # Fallback sudah menangani ini — jangan penuhi log:
+                # - "not modified": no-op rutin
+                # - "can't parse entities": otomatis fallback plain di
+                #   send_html/edit_html
+                # - "query is too old / query ID is invalid": tombol inline
+                #   kadaluarsa (user tap pesan lama), bukan error sistem
+                if "not modified" in desc:
+                    pass
+                elif "can't parse" in low:
+                    pass
+                elif "query is too old" in low or "query id is invalid" in low:
+                    pass
+                elif method == "getUpdates" and e.code in (500, 502, 504):
+                    # Telegram transient: throttle log max 1x/60s, polling
+                    # sudah backoff di gateway.py
+                    now = time.time()
+                    if now - _last_transient_log["ts"] > 60:
+                        _last_transient_log["ts"] = now
+                        log(f"TG {method} transient HTTP {e.code} "
+                            f"(backoff, tidak spam)")
+                else:
                     log(f"TG {method} HTTP {e.code}: {desc[:160]}")
             return body or {"ok": False, "error_code": e.code}
         except Exception as e:  # noqa: BLE001
-            log(f"TG {method} error: {e}")
+            # getUpdates timeout/read-timout saat long-poll normal — jangan
+            # spam tiap 30s, cukup throttle
+            msg = str(e)
+            if method == "getUpdates" and (
+                    "timed out" in msg.lower() or "timeout" in msg.lower()
+                    or "temporary failure" in msg.lower()):
+                now = time.time()
+                if now - _last_transient_log["ts"] > 60:
+                    _last_transient_log["ts"] = now
+                    log(f"TG {method} transient: {msg[:120]}")
+            else:
+                log(f"TG {method} error: {e}")
         return None
 
     def get(self, method: str, http_timeout: int = 60):
@@ -110,7 +143,9 @@ class Telegram:
     def send_html(self, chat_id, html: str, silent: bool = False,
                   reply_to: int = 0) -> int:
         """Kirim HTML; fallback ke plain text kalau parse gagal."""
-        r = self.call("sendMessage", chat_id=chat_id, text=html[:4000],
+        # Jangan potong di tengah tag: potong aman max 4000 char.
+        text = _safe_html_cut(html or "", 4000)
+        r = self.call("sendMessage", chat_id=chat_id, text=text,
                       parse_mode="HTML", disable_web_page_preview=True,
                       **({"disable_notification": True} if silent else {}),
                       **({"reply_parameters": {"message_id": reply_to}}
@@ -118,8 +153,7 @@ class Telegram:
         if r and r.get("ok"):
             return (r.get("result") or {}).get("message_id", 0)
         if self._is_parse_error(r):
-            plain = re.sub(r"</?(?:b|i|u|s|code|pre|blockquote|a)(?:\s[^<>]*)?>",
-                           "", html or "")
+            plain = re.sub(r"<[^<>]+>", "", html or "")
             plain = _html.unescape(plain)
             return self.send(chat_id, plain, silent=silent,
                              reply_to=reply_to)
@@ -138,14 +172,14 @@ class Telegram:
 
     def edit_html(self, chat_id, message_id, html: str) -> bool:
         """Edit pakai HTML; fallback plain. True kalau pesannya berubah."""
+        text = _safe_html_cut(html or "", 4000)
         r = self.call("editMessageText", chat_id=chat_id,
-                      message_id=message_id, text=html[:4000],
+                      message_id=message_id, text=text,
                       parse_mode="HTML", disable_web_page_preview=True)
         if r and r.get("ok"):
             return True
         if self._is_parse_error(r):
-            plain = re.sub(r"</?(?:b|i|u|s|code|pre|blockquote|a)(?:\s[^<>]*)?>",
-                           "", html or "")
+            plain = re.sub(r"<[^<>]+>", "", html or "")
             self.edit(chat_id, message_id, _html.unescape(plain))
             return True
         return False
@@ -182,7 +216,8 @@ class Telegram:
 
     def get_updates(self, offset: int, long_poll: int):
         """offset & timeout(Telegram long-poll) dikirim sebagai params."""
-        allowed = ["message", "callback_query"]
+        allowed = ["message", "edited_message", "callback_query",
+                   "channel_post", "edited_channel_post"]
         if CFG["telegram"].get("inline_mode"):
             allowed.append("inline_query")
         params = {"offset": offset, "timeout": long_poll,
@@ -191,9 +226,15 @@ class Telegram:
 
     def drop_pending(self) -> int:
         """Buang backlog di cold start. Kembalikan offset awal."""
-        r = self.call("getUpdates", http_timeout=15, offset=-1, limit=1)
+        try:
+            r = self.call("getUpdates", http_timeout=15, offset=-1, limit=1)
+        except Exception:  # noqa: BLE001
+            return 0
         res = (r or {}).get("result") or []
-        return (res[-1]["update_id"] + 1) if res else 0
+        try:
+            return (res[-1]["update_id"] + 1) if res else 0
+        except Exception:  # noqa: BLE001
+            return 0
 
     def download(self, file_id: str, subdir: str, ext_hint: str = ""):
         r = self.call("getFile", file_id=file_id)
@@ -242,9 +283,23 @@ class Telegram:
         if self.proxy:
             cmd[3:3] = ["-x", self.proxy]
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True,
-                                 timeout=130).stdout
-            if not json.loads(out).get("ok"):
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=130)
+            out = (proc.stdout or "").strip()
+            if not out:
+                err = (proc.stderr or "").strip()[:200]
+                log(f"send_media kosong (curl gagal): {err or 'no output'}")
+                self.send(chat_id,
+                          "⚠️ Gagal kirim file (jaringan kosong) — coba lagi.")
+                return False
+            try:
+                data = json.loads(out)
+            except Exception:  # noqa: BLE001
+                log(f"send_media bukan JSON: {out[:200]}")
+                self.send(chat_id,
+                          "⚠️ Gagal kirim file (respons rusak) — coba lagi.")
+                return False
+            if not data.get("ok"):
                 log(f"send_media gagal: {out[:200]}")
                 return False
             return True
@@ -256,30 +311,57 @@ class Telegram:
 TG = Telegram()
 
 
+def _safe_html_cut(html_text: str, limit: int = 4000) -> str:
+    """Potong HTML max limit tanpa motong di tengah tag/entity.
+
+    Mundur ke batas '<' / '&' terakhir bila potongan mentah memotong
+    tag atau entity — mencegah 'can't parse entities' ala Hermes.
+    """
+    if len(html_text) <= limit:
+        return html_text
+    cut = html_text[:limit]
+    # Jangan potong di tengah tag <...>
+    lt = cut.rfind("<")
+    gt = cut.rfind(">")
+    if lt > gt:
+        cut = cut[:lt]
+    # Jangan potong di tengah entity &...;
+    amp = cut.rfind("&")
+    semi = cut.rfind(";")
+    if amp > semi and amp > len(cut) - 10:
+        cut = cut[:amp]
+    return cut
+
+
 def send_rich(chat_id, text: str, keyboard=None) -> None:
     """Pesan ber-HTML (buatan gateway) + optional inline keyboard.
 
-    Tiap potongan lewat send_html: kalau pecah di tengah tag dan parse
-    gagal, otomatis fallback plain — tidak ada potongan yang hilang.
+    Pakai split_pages (potong per paragraf, seimbangkan <pre>) supaya
+    jawaban panjang terkirim FULL berhalaman, bukan kepotong 4000 char
+    di tengah tag.
     """
+    from render import split_pages as _split_pages
     text = text or "(kosong)"
+    try:
+        pages = _split_pages(text)
+    except Exception:  # noqa: BLE001
+        pages = [text[i:i + 3800] for i in range(0, len(text), 3800)] or [text]
     first = True
-    for i in range(0, len(text), 4000):
-        chunk = text[i:i + 4000]
+    for chunk in pages:
         kb = keyboard if first else None
         first = False
         if kb:
-            r = TG.call("sendMessage", chat_id=chat_id, text=chunk,
+            cut = _safe_html_cut(chunk, 4000)
+            r = TG.call("sendMessage", chat_id=chat_id, text=cut,
                         parse_mode="HTML", disable_web_page_preview=True,
                         reply_markup=json.dumps(kb))
             if r and r.get("ok"):
                 continue
             if r and not TG._is_parse_error(r):
                 continue
-            plain = re.sub(r"</?(?:b|i|u|s|code|pre|blockquote|a)"
-                           r"(?:\s[^<>]*)?>", "", chunk)
+            plain = re.sub(r"<[^<>]+>", "", chunk)
             TG.call("sendMessage", chat_id=chat_id,
-                    text=_html.unescape(plain),
+                    text=_html.unescape(plain)[:4000],
                     disable_web_page_preview=True,
                     reply_markup=json.dumps(kb))
         else:
@@ -288,14 +370,14 @@ def send_rich(chat_id, text: str, keyboard=None) -> None:
 
 def edit_rich(chat_id, message_id, text: str, keyboard=None) -> None:
     if keyboard is not None:
+        cut = _safe_html_cut(text or "", 4000)
         r = TG.call("editMessageText", chat_id=chat_id,
-                    message_id=message_id, text=text[:4000],
+                    message_id=message_id, text=cut,
                     parse_mode="HTML", disable_web_page_preview=True,
                     reply_markup=json.dumps(keyboard))
         if r and (r.get("ok") or not TG._is_parse_error(r)):
             return
-        plain = re.sub(r"</?(?:b|i|u|s|code|pre|blockquote|a)"
-                       r"(?:\s[^<>]*)?>", "", text or "")
+        plain = re.sub(r"<[^<>]+>", "", text or "")
         TG.call("editMessageText", chat_id=chat_id, message_id=message_id,
                 text=_html.unescape(plain)[:4000],
                 disable_web_page_preview=True,

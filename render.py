@@ -41,7 +41,7 @@ SILENCE_RE = re.compile(
 PREVIEW_TEXT = "💭 Thinking…"
 
 
-TOOL_PREVIEW_CAP = 40
+TOOL_PREVIEW_CAP = 64
 
 # Hermes: verb ramah per tool + connector (" for " khusus search-style).
 
@@ -67,12 +67,12 @@ TOOL_NO_PREVIEW = {"todo", "todowrite", "todoread"}
 def _preview_40(label: str) -> str:
     one = " ".join((label or "").split())
     if len(one) > TOOL_PREVIEW_CAP:
-        return one[:TOOL_PREVIEW_CAP - 3] + "..."
+        return one[:TOOL_PREVIEW_CAP - 1] + "…"
     return one
 
 
 def progress_line(name: str, label: str, done: bool) -> str:
-    """Satu baris progress ala Hermes: `💻 bash...` -> `💻 Running \"cmd\"`."""
+    """Satu baris progress ala Hermes: `💻 bash...` -> `💻 Running "cmd"`."""
     emoji = tool_icon(name)
     tool = (name or "tool").strip() or "tool"
     if not done:
@@ -91,23 +91,60 @@ def progress_line(name: str, label: str, done: bool) -> str:
 
 TERMINAL_TOOLS = {"bash", "shell", "terminal", "execute", "execute_code"}
 
+# Bubble progres: tampilkan N tool terakhir saja (Hermes ringkas).
+PROG_MAX_TOOLS = 6
+# Command bash di <pre> (TAP-TO-COPY di Telegram): satu blok per call,
+# max baris & char biar ringkas tapi tetap bisa dicopy utuh bila pendek.
+PROG_CMD_MAX_LINES = 3
+PROG_CMD_MAX_CHARS = 300
 
-def prog_html(tool_lines, limit: int = 3700) -> str:
-    """Bubble progres ala Hermes: tool terminal jadi header + blok <pre>
-    (header tak diulang untuk call terminal berurutan), sisanya baris
-    single-line. Baris tertua dibuang bila melewati limit."""
+
+def _clean_cmd(label: str) -> str:
+    """Rapikan perintah terminal buat <pre>: buang baris kosong/komen,
+    potong max baris/char di batas kata, tambah … bila dipotong."""
+    lines = [(ln.rstrip()) for ln in (label or "").splitlines()]
+    lines = [ln for ln in lines
+             if ln.strip() and not ln.strip().startswith("#")]
+    if not lines:
+        one = " ".join((label or "").split())
+        return _short(one, PROG_CMD_MAX_CHARS)
+    kept = lines[:PROG_CMD_MAX_LINES]
+    txt = "\n".join(ln[:200] for ln in kept)
+    if len(lines) > len(kept):
+        txt += f"\n… (+{len(lines) - len(kept)} baris)"
+    return _short(txt, PROG_CMD_MAX_CHARS)
+
+
+def _short(s: str, cap: int) -> str:
+    """Potong di batas kata + … (jangan motong tengah kata jelek)."""
+    if len(s) <= cap:
+        return s
+    cut = s[:cap - 1].rsplit(" ", 1)[0] or s[:cap - 1]
+    return cut + "…"
+
+
+def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) -> str:
+    """Bubble progres: tool terminal = SATU blok <pre> per call.
+
+    <pre> bisa TAP-TO-COPY di Telegram (inline quote tidak bisa) —
+    tiap command bash selalu blok sendiri. Call bash berurutan berbagi
+    satu header `💻 bash` biar ringkas; tool lain satu baris ringkas.
+    Hanya N tool terakhir; baris tertua dibuang bila melewati limit.
+    """
+    items = list(tool_lines.values())
+    if max_tools and len(items) > max_tools:
+        items = items[-max_tools:]
     blocks: list = []
-    for name, label, done in tool_lines.values():
+    for name, label, done in items:
         low = (name or "").lower()
-        first_cmd = " ".join((label or "").splitlines()[0:1])[:200]
-        if low in TERMINAL_TOOLS and _preview_40(first_cmd):
-            cmd = esc(first_cmd)
+        cmd = _clean_cmd(label) if low in TERMINAL_TOOLS else ""
+        if cmd:
             if blocks and blocks[-1][0] == f"t:{low}":
-                blocks[-1][1].append(f"<pre>{cmd}</pre>")
+                blocks[-1][1].append(f"<pre>{esc(cmd)}</pre>")
             else:
                 blocks.append((f"t:{low}",
                                [f"{tool_icon(name)} <b>{esc(name or 'tool')}</b>",
-                                f"<pre>{cmd}</pre>"]))
+                                f"<pre>{esc(cmd)}</pre>"]))
         else:
             blocks.append((f"s:{name}:{label}:{done}",
                            [progress_line(name, label, done)]))
@@ -242,8 +279,69 @@ def _normalize_tables(text: str) -> str:
     return "\n".join(out)
 
 
+
+_ALLOWED_TAGS = {"b", "i", "u", "s", "code", "pre", "a", "blockquote",
+                 "tg-spoiler"}
+_TAG_RX = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^<>]*)?)>")
+
+
+def _strip_to_plain(html_text: str) -> str:
+    """Buang semua tag, unescape entity -> plain text aman Telegram."""
+    no_tags = re.sub(r"<[^<>]+>", "", html_text)
+    return _html.unescape(no_tags)
+
+
+def _balance_or_plain(html_text: str) -> str:
+    """Validasi tag HTML Telegram (nesting + atribut). Invalid -> plain.
+
+    Ketat ala Hermes: hanya 8 tag, tak ada <br>/<p>/<div>,
+    tak ada <pre> di dalam inline (b/i/a), semua harus seimbang.
+    """
+    try:
+        stack = []
+        for m in _TAG_RX.finditer(html_text):
+            closing, name, attrs = m.group(1), m.group(2).lower(), (m.group(3) or "")
+            if name not in _ALLOWED_TAGS:
+                return _strip_to_plain(html_text)
+            attrs = attrs.strip()
+            if closing:
+                if not stack or stack[-1] != name:
+                    return _strip_to_plain(html_text)
+                stack.pop()
+                continue
+            if name == "a":
+                if not re.fullmatch(r'href="[^"<>]+"', attrs):
+                    return _strip_to_plain(html_text)
+                if "pre" in stack or "code" in stack:
+                    return _strip_to_plain(html_text)
+            elif name == "code":
+                if attrs and not re.fullmatch(r'class="language-[a-zA-Z0-9+\-]{1,32}"', attrs):
+                    return _strip_to_plain(html_text)
+            elif attrs:
+                return _strip_to_plain(html_text)
+            if name == "pre" and any(s in ("b", "i", "u", "s", "a",
+                                             "tg-spoiler") for s in stack):
+                return _strip_to_plain(html_text)
+            if name == "blockquote" and "pre" in stack:
+                return _strip_to_plain(html_text)
+            stack.append(name)
+        if stack:
+            return _strip_to_plain(html_text)
+        # Tag tak dikenal yang lolos regex (mis. <br>, <p>): tolak.
+        if re.search(r"</?(?:br|p|div|span|ul|ol|li|table|tr|td|h[1-6])[\s>/]", html_text, re.IGNORECASE):
+            return _strip_to_plain(html_text)
+        return html_text
+    except Exception:
+        return _strip_to_plain(html_text)
+
+
 def md_to_html(text: str) -> str:
-    """Markdown umum -> HTML Telegram. Gagal -> plain (tak pernah throw)."""
+    """Markdown umum -> HTML Telegram. Gagal -> plain (tak pernah throw).
+
+    Rapi ala Hermes: code difence diproteksi holder, inline bold/italic
+    diproteksi per-match supaya tak bisa overlap lintas tag (penyebab
+    'Unmatched end tag ... </i> vs </b>' yang bikin bubble hancur).
+    """
     try:
         if not text:
             return ""
@@ -259,8 +357,10 @@ def md_to_html(text: str) -> str:
             lang = lead.split("```", 1)[1].strip() if "```" in lead else ""
             code = _html.escape(body.strip("\n"))
             if lang:
-                return _hold(f'<pre><code class="{_html.escape(lang)}">'
-                              f"{code}</code></pre>")
+                lang_safe = re.sub(r"[^a-zA-Z0-9+\-]", "", lang)[:32]
+                if lang_safe:
+                    return _hold(f'<pre><code class="language-{lang_safe}">'
+                                  f"{code}</code></pre>")
             return _hold(f"<pre>{code}</pre>")
 
         # 0. inline ```code``` sebaris -> code biasa (bukan fence)
@@ -268,50 +368,140 @@ def md_to_html(text: str) -> str:
                       lambda m: _hold(f"<code>{_html.escape(m.group(1))}"
                                       "</code>"), text)
         # 1. fenced block: buka di awal baris & tutup di baris sendiri
-        # (Hermes); inline ``` tak dimakan
+        # (Hermes); inline ``` tak dimakan. Unclosed fence di ujung
+        # dianggap tertutup (biar tak ada ``` mentah yang hancur).
         text = re.sub(r"(?m)^([^\n]*```[^\n]*\n)([\s\S]*?)(^[ \t]*```)[ \t]*$",
                       _fence, text)
+        if text.count("```") % 2 == 1 or (
+                re.search(r"(?m)^[^\n]*```[^\n]*$", text) and "```" in text):
+            # satu fence gantung: bungkus sisa sampai akhir sebagai <pre>
+            def _unclosed(m):
+                lead, body = m.group(1), m.group(2)
+                lang = lead.split("```", 1)[1].strip() if "```" in lead else ""
+                code = _html.escape(body.strip("\n"))
+                lang_safe = re.sub(r"[^a-zA-Z0-9+\-]", "", lang)[:32]
+                if lang_safe:
+                    return _hold(f'<pre><code class="language-{lang_safe}">'
+                                  f"{code}</code></pre>")
+                return _hold(f"<pre>{code}</pre>")
+            text = re.sub(r"(?m)^([^\n]*```[^\n]*\n)([\s\S]*)$",
+                          _unclosed, text, count=1)
+        # 1b. blok indent (4 spasi/tab, >=2 baris berurutan) -> <pre>.
+        # Output terminal yang lupa difence agent tetap tampil monospace
+        # rapi, bukan teks jalan yang hancur. Konservatif: bukan list
+        # markdown (`- `, `1. `), heading, quote, atau tabel — tapi output
+        # `ls -l` (`-rw-r--r--`) dan IP (`127.0.0.1`) tetap lolos.
+        _IND = r"(?:    |\t)"
+        _NOT_MD = r"(?![-*+][ \t]|#{1,6}[ \t]|>|\d{1,3}[.)][ \t]|\|)"
+        _IND_LINE = _IND + _NOT_MD + r"[^\n]*"
+        def _indent_block(m):
+            body = "\n".join(
+                ln[4:] if ln.startswith("    ") else ln[1:]
+                for ln in m.group(0).split("\n"))
+            return _hold("<pre>" + _html.escape(body.strip("\n")) + "</pre>")
+        text = re.sub(r"(?m)^" + _IND_LINE + r"(?:\n" + _IND_LINE + r")+",
+                      _indent_block, text)
         text = re.sub(r"`([^`\n]+)`",
                       lambda m: _hold(f"<code>{_html.escape(m.group(1))}"
                                       "</code>"), text)
         # 2. escape sisa HTML
         text = _html.escape(text)
-        # 3. heading -> bold
+        # 3. heading -> bold (hierarki besar); HR -> divider tipis;
+        # list -> bullet • rapi. Semua sebelum bold/italic supaya marker
+        # `---`/`***` tak dimakan pola inline.
         text = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", text)
-        # 4. bold + italic + strike
-        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-        text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
-        text = re.sub(r"(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)", r"<i>\1</i>",
+        text = re.sub(r"(?m)^[ \t]*(?:---+|\*\*\*+|___+)[ \t]*$",
+                      "────────", text)
+        text = re.sub(r"(?m)^([ \t]*)[-*+][ \t]+", r"\1• ", text)
+        text = re.sub(r"(?m)^([ \t]*)\d+[.)][ \t]+",
+                      lambda m: f"{m.group(1)}{m.group(0).strip().split()[0]} ",
                       text)
-        text = re.sub(r"(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)", r"<i>\1</i>",
+
+        # 4. bold/italic/strike/spoiler — tiap hasil langsung di-holder
+        # supaya pola berikutnya tak bisa match melintasi tag (overlap
+        # = sumber 'can't parse entities' di Telegram).
+        def _fmt(pat, tag_open, tag_close):
+            def _sub(m):
+                inner = m.group(1)
+                # pola sudah melarang <> mentah; holder \x00 diizinkan
+                # (nested valid, direstore belakangan).
+                if "<" in inner or ">" in inner:
+                    return m.group(0)
+                return _hold(f"{tag_open}{inner}{tag_close}")
+            return _sub
+
+        # bold dulu (agar ** tak dimakan italic *), isi boleh holder
+        # (\x00) tapi tak boleh tag <> — nested valid, overlap impossible
+        # karena tag sudah jadi holder opaque.
+        text = re.sub(r"\*\*([^<>]+?)\*\*",
+                      _fmt(None, "<b>", "</b>"), text)
+        text = re.sub(r"__([^<>]+?)__",
+                      _fmt(None, "<b>", "</b>"), text)
+        text = re.sub(r"(?<!\w)\*(?!\s)([^<>]+?)(?<!\s)\*(?!\w)",
+                      _fmt(None, "<i>", "</i>"), text)
+        text = re.sub(r"(?<!\w)_(?!\s)([^<>]+?)(?<!\s)_(?!\w)",
+                      _fmt(None, "<i>", "</i>"), text)
+        text = re.sub(r"~~([^<>]+?)~~",
+                      _fmt(None, "<s>", "</s>"), text)
+        text = re.sub(r"\|\|([^<>]+?)\|\|",
+                      _fmt(None, "<tg-spoiler>", "</tg-spoiler>"), text)
+        # 5. link [t](url) dukung parens dalam URL (Hermes) + bare url.
+        # Judul link tak boleh mengandung holder code yang belum restore?
+        # Boleh — holder \x00 aman di dalam <a>, direstore belakangan.
+        def _link(m):
+            title, url = m.group(1), m.group(2).strip()
+            if "\n" in url or " " in url and not url.startswith("http"):
+                pass
+            url = url.strip("<>")
+            if not re.match(r"https?://|mailto:|tg://", url):
+                return m.group(0)
+            if "<" in title and "\x00" not in title:
+                return m.group(0)
+            return _hold(f'<a href="{_html.escape(url, quote=True)}">{title}</a>')
+        text = re.sub(r"\[([^\]\n]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)",
+                      _link, text)
+        text = re.sub(r"(?<![\"'=\x00])(https?://[^\s<>\x00]+)",
+                      lambda m: _hold(f'<a href="{m.group(1)}">{m.group(1)}</a>'),
                       text)
-        text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
-        text = re.sub(r"\|\|(.+?)\|\|", r"<u>\1</u>", text)
-        # 5. link [t](url) dukung parens dalam URL (Hermes) + bare url
-        text = re.sub(r"\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)",
-                      r'<a href="\2">\1</a>', text)
-        text = re.sub(r"(?<![\"'=])(https?://[^\s<>]+)",
-                      r'<a href="\1">\1</a>', text)
-        # 6. blockquote per baris
+        # 6. blockquote per baris (setelah link; isi sudah holder-aman),
+        # lalu gabung baris quote berurutan jadi SATU kotak (satu garis
+        # abu, bukan rentetan kotak).
         text = re.sub(r"(?m)^&gt;\s?(.*)$", r"<blockquote>\1</blockquote>",
                       text)
         text = re.sub(r"(?m)^&gt;(.*)$", r"<blockquote>\1</blockquote>",
                       text)
         text = re.sub(r"(?m)^>\s?(.*)$", r"<blockquote>\1</blockquote>",
                       text)
-        # 7. kembalikan code
-        for k, v in holders.items():
+        text = re.sub(r"</blockquote>\n<blockquote>", "\n", text)
+        # 7. kembalikan semua holder (code + inline fmt + link).
+        # Urutan BALIK (luar dulu, dalam belakangan) supaya holder
+        # bersarang (mis. <tg-spoiler>spoiler <b>bold</b></tg-spoiler>)
+        for k, v in reversed(list(holders.items())):
             text = text.replace(_html.escape(k), v).replace(k, v)
+        # Sisa holder (seharusnya tak ada) → buang biar tak ada \x00 mentah.
+        if "\x00" in text:
+            text = re.sub(r"\x00\d+\x00", "", text)
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
-        return text
+        return _balance_or_plain(text)
     except Exception:  # noqa: BLE001
         return _html.escape(text or "")
 
 
 def split_pages(html: str, limit: int = PAGE_SIZE) -> list:
-    """Bagi HTML per halaman tanpa motong blok <pre>; bernomor bila >1."""
+    """Bagi HTML per halaman tanpa motong blok <pre>; bernomor bila >1.
+
+    Tiap halaman divalidasi via _balance_or_plain — halaman yang
+    terpotong di tengah tag (b/i/a/blockquote) jatuh ke plain aman,
+    bukan error 'can't parse entities' yang hancur di Telegram.
+    """
+    def _valid(p: str) -> str:
+        v = _balance_or_plain(p)
+        # _balance_or_plain mengembalikan plain (tanpa tag) bila invalid;
+        # bedakan dengan cara cek: bila ada tag tersisa yang invalid,
+        # plain sudah aman dikirim.
+        return v
     if len(html) <= limit:
-        return [html]
+        return [_valid(html)]
     paras = re.split(r"\n\s*\n", html)
     pages, cur = [], ""
     for p in paras:
@@ -354,8 +544,9 @@ def split_pages(html: str, limit: int = PAGE_SIZE) -> list:
                 carry = True
             else:
                 carry = False
-            balanced.append(p)
+            balanced.append(_valid(p))
         pages = balanced
         n = len(pages)
         pages = [f"{p} ({k}/{n})" for k, p in enumerate(pages, 1)]
-    return pages
+        return pages
+    return [_valid(p) for p in pages]

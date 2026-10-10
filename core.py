@@ -37,7 +37,7 @@ DEFAULT_CFG = {
         "allow_bots": False,
         "status_indicator": False,
         "drop_pending_on_cold_boot": True,
-        "batching": {"enabled": True, "hold_sec": 4},
+        "batching": {"enabled": True, "hold_sec": 1.2},
         "group_allow_from": [],
         "cron_thread_id": "",
         "notifications": "important",
@@ -74,6 +74,7 @@ DEFAULT_CFG = {
             "default": {
                 "workspace": os.path.join(os.path.expanduser("~"),
                                          "oc-workspace"),
+                "session_dir": "",
                 "model": "",
                 "agent": "",
                 "auto_approve": True,
@@ -227,6 +228,20 @@ class State:
     def get_session(self, key: str):
         with self.lock:
             return self.data["sessions"].get(key)
+
+    def get_offset(self) -> int:
+        """Offset update Telegram terakhir (anti-duplikat pas restart)."""
+        with self.lock:
+            try:
+                return int(self.data.get("update_offset", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+    def set_offset(self, offset: int) -> None:
+        with self.lock:
+            if int(offset or 0) != int(self.data.get("update_offset", 0) or 0):
+                self.data["update_offset"] = int(offset)
+                self.save()
 
     def set_session(self, key: str, sid: str) -> None:
         with self.lock:

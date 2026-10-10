@@ -140,14 +140,27 @@ def handle_update(u: dict) -> None:
         except Exception as e:  # noqa: BLE001
             log(f"handle_inline error: {e}")
         return
-    msg = u.get("message") or {}
+    # Terima juga edit + channel post biar "kebaca semua" — edit diperlakukan
+    # sebagai pesan baru (tanpa dobel kalau update_id sama berkat dedup).
+    msg = (u.get("message") or u.get("edited_message")
+           or u.get("channel_post") or u.get("edited_channel_post") or {})
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
     thread_id = msg.get("message_thread_id")
     user = msg.get("from") or {}
     user_id = user.get("id")
-    if not chat_id or not user_id:
+    # channel_post sering tanpa `from` — pakai chat sebagai identitas agar
+    # tidak drop diam-diam
+    if not chat_id:
         return
+    if not user_id:
+        # Izinkan channel_post / edited tanpa from lolos ke gate berikutnya
+        # dengan user_id = chat_id (akan dicek allowlist)
+        if u.get("channel_post") or u.get("edited_channel_post"):
+            user_id = chat_id
+            user = {"id": user_id, "username": "channel"}
+        else:
+            return
     if user.get("is_bot"):
         if not CFG["telegram"].get("allow_bots", False):
             return
@@ -224,6 +237,13 @@ def handle_update(u: dict) -> None:
 
     nick = user.get("username") or user.get("first_name") or user_id
     is_group = chat.get("type") in ("group", "supergroup")
+    # Reflect cepat: indikator typing LANGSUNG (tak nunggu batching 1.2s +
+    # download media) — user lihat bot kerja dalam <1 detik.
+    try:
+        threading.Thread(target=TG.typing, args=(chat_id,),
+                         daemon=True).start()
+    except Exception:  # noqa: BLE001
+        pass
     markers, files = collect_media(msg)
     enabled, hold = _batch_cfg()
     if enabled:
@@ -248,12 +268,12 @@ MUTATING_COMMANDS = {"new", "reset", "stop", "undo", "retry", "resume",
 def _batch_cfg():
     b = CFG["telegram"].get("batching", {})
     if isinstance(b, bool):
-        return (b, 4.0)
+        return (b, 1.2)
     try:
         return (b.get("enabled", True),
-                max(1.0, float(b.get("hold_sec", 4) or 4)))
+                max(0.6, float(b.get("hold_sec", 1.2) or 1.2)))
     except (TypeError, ValueError, AttributeError):
-        return (True, 4.0)
+        return (True, 1.2)
 
 
 def _batch_discard(key: str) -> None:
@@ -300,8 +320,8 @@ def _batch_flush(key: str) -> None:
     if not buf:
         return
     parts = [p for p in buf["parts"] if p]
-    if not parts and not buf["markers"] and not buf["files"]:
-        return
+    # Jangan drop diam-diam: kalau kosong tetap dispatch supaya user dapat
+    # feedback "(pesan kosong)" bukan merasa "ga dibaca".
     _dispatch_admitted(buf["chat_id"], buf["thread_id"], buf["user_id"],
                        buf["nick"], buf["is_group"], "\n\n".join(parts),
                        buf["markers"], buf["files"], buf["reply_to"], key)

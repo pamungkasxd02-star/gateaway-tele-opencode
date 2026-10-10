@@ -14,7 +14,7 @@
     "bots_require_mention": true,
     "allow_bots": false,
     "status_indicator": true,
-    "drop_pending_on_cold_boot": true,
+    "drop_pending_on_cold_boot": false,
     "group_allow_from": [],
     "cron_thread_id": "",
     "notifications": "important",
@@ -83,7 +83,7 @@
     ],
     "batching": {
       "enabled": true,
-      "hold_sec": 4
+      "hold_sec": 1.2
     }
   },
   "gateway": {
@@ -102,9 +102,10 @@
       "default": {
         "workspace": "~/oc-workspace",
         "model": "opencode/ling-3.1-flash-free",
-        "agent": "",
+        "agent": "blackhat",
         "auto_approve": true,
-        "timeout_sec": 900
+        "timeout_sec": 900,
+        "session_dir": "/opt/ops/yatim-full"
       }
     }
   },
