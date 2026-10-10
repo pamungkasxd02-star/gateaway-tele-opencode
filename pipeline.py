@@ -569,6 +569,14 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
                                cwd=workspace, latency=elapsed)
     if footer:
         blocks.append(f"────────\n<i>{esc(footer)}</i>")
+    if ctx_len and st.last_input:
+        try:
+            pct = round(st.last_input / ctx_len * 100)
+        except (TypeError, ZeroDivisionError):
+            pct = 0
+        if pct >= 70:
+            blocks.append("⚠️ Konteks <b>%d%%</b> — sesi gemuk, jawaban bisa "
+                          "hancur. <code>/compress</code> biar rapi lagi." % pct)
     full_html = "\n\n".join(b for b in blocks if b)
     pages = split_pages(full_html)
 
