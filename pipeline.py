@@ -500,7 +500,9 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
         fail = f"❌ <b>Gagal</b>\n{esc(_friendly_error(st.error))}"
         low = st.error.lower()
         if "rate limit" in low or "429" in low or "quota" in low \
-                or "too many request" in low:
+                or "too many request" in low or "freetier" in low \
+                or "provider request failed" in low \
+                or ("403" in low and "forbidden" in low):
             STATE.add_quota(model)
             if mode == "normal" and not _auto_rotated \
                     and _auto_rotate_due():
