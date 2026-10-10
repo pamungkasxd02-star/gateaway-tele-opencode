@@ -102,6 +102,14 @@ TERMINAL_TOOLS = {"bash", "shell", "terminal", "execute", "execute_code"}
 PROG_MAX_TOOLS = 6
 
 _COUNT_RE = re.compile(r"\(\+(\d+) baris\)")
+_SLEEP_RE = re.compile(r"^\s*sleep[\d\s.]+\s*$", re.IGNORECASE)
+
+
+def _is_pure_sleep(label: str) -> bool:
+    """True bila command CUMA sleep (pacing anti-ban, zero info).
+    `sleep 5 && curl …` tetap tampil (ada kerja beneran)."""
+    first = ((label or "").split("\n")[0] or "").strip()
+    return bool(first) and bool(_SLEEP_RE.match(first))
 
 
 def _bash_short(label: str) -> str:
@@ -145,6 +153,8 @@ def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) ->
     for name, label, done in items:
         low = (name or "").lower()
         if low in TERMINAL_TOOLS:
+            if _is_pure_sleep(label):
+                continue  # pacing doang, jangan penuhi bubble
             short = _bash_short(label)
             if short:
                 if blocks and blocks[-1][0] == f"t:{low}":

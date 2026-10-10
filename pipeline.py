@@ -265,7 +265,15 @@ def _prog_deliver(chat_id, ids: list, html: str, silent: bool) -> None:
         pages = split_pages(html, 3700, number=False)
     except Exception:  # noqa: BLE001
         pages = [html]
-    if not pages:
+    if not pages or not (html or "").strip():
+        for mid_ in ids:
+            if mid_:
+                try:
+                    TG.call("deleteMessage", chat_id=chat_id,
+                            message_id=mid_)
+                except Exception:  # noqa: BLE001
+                    pass
+        del ids[:]
         return
     if ids and ids[0]:
         if not TG.edit_html(chat_id, ids[0], pages[0]):
@@ -442,7 +450,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
             lc = _live_ctx(st)
             if lc:
                 pt += "\n" + lc
-            if pt != last_prog[0]:
+            if pt.strip() and pt != last_prog[0]:
                 last_prog[0] = pt
                 _prog_deliver(chat_id, prog_ids, pt,
                               silent=_stream_silent())
