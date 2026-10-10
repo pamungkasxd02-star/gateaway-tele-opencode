@@ -127,6 +127,9 @@
     "poll_sec": 30,
     "max_jobs": 50
   },
+  "models": {
+    "ctx_1m": true
+  },
   "bot_loop_guard": {
     "enabled": true,
     "max_events": 20,

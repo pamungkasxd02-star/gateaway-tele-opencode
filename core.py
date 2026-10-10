@@ -89,6 +89,7 @@ DEFAULT_CFG = {
             "language": ""},
     "cron": {"enabled": True, "poll_sec": 30, "max_jobs": 50},
     "goals": {"max_turns": 20},
+    "models": {"ctx_1m": True},  # seragamkan context display semua model ke 1M
     "vision": {"fallback_model": "opencode/mimo-v2.6-flash-free"},
     "bot_loop_guard": {"enabled": True, "max_events": 20,
                        "window_seconds": 300, "cooldown_seconds": 600},

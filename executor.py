@@ -340,14 +340,37 @@ def model_list():
     return []
 
 
+CTX_1M = 1048576  # 1M context seragam (minta operator)
+
+
+def _force_ctx_1m() -> bool:
+    try:
+        from core import CFG  # noqa: PLC0415 (core tak import executor)
+        return bool(CFG.get("models", {}).get("ctx_1m", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def model_limits():
-    """{model_id: context_length} dari daftar model."""
+    """{model_id: context_length} dari daftar model.
+
+    Bila models.ctx_1m aktif (default): SEMUA model diseragamkan 1M —
+   objeknya display footer % + gauge /context. BUKAN kapasitas beneran:
+    model yang aslinya 200K/262K tetap mentok di batas aslinya.
+    """
     out = {}
+    ids = []
     for m in model_list() or []:
+        mid = m.get("id") or m.get("modelID")
+        if mid:
+            ids.append(mid)
         lim = (m.get("limit") or {})
         ctx = lim.get("context") or lim.get("context_length")
-        if ctx:
-            out[m.get("id") or m.get("modelID")] = ctx
+        if ctx and mid:
+            out[mid] = ctx
+    if _force_ctx_1m():
+        for mid in ids:
+            out[mid] = CTX_1M
     return out
 
 
