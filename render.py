@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Rendering jawaban Telegram: progress teks-polos per tool, silence,
-markdown->HTML, tabel->bullets, pagination, footer runtime-metadata.
-Fungsi murni + baca CFG."""
+"""Rendering ala Hermes: ikon/verb tool, bubble progres, silence,
+markdown->HTML Telegram, tabel->bullets, pagination, footer."""
 
 import html as _html
 import os
@@ -9,6 +8,27 @@ import re
 
 from core import CFG, esc
 
+TOOL_ICONS = {
+    "shell": "💻", "bash": "💻", "terminal": "💻", "run": "💻",
+    "execute": "💻", "execute_code": "🐍",
+    "web_search": "🔍", "search": "🔍", "webfetch": "🔍",
+    "fetch": "🌐", "web": "🌐", "browser": "🌐",
+    "web_extract": "📄", "extract": "📄",
+    "read": "📖", "view": "📖",
+    "write": "✏️", "edit": "✏️", "patch": "✏️", "create": "✏️",
+    "apply_patch": "✏️",
+    "python": "🐍", "code": "🐍",
+    "glob": "🗂", "ls": "🗂", "list": "🗂",
+    "grep": "🔎", "codesearch": "🔎",
+    "skill": "🧩", "skills": "🧩",
+    "task": "🤖", "delegate": "🚀", "subagent": "🤖",
+    "todowrite": "📋", "todoread": "📋", "todo": "📋",
+    "question": "❓", "clarify": "❓", "ask": "❓",
+    "plan": "🗺", "review": "🔎",
+    "image": "🖼", "vision": "🖼",
+    "memory": "🧠", "remember": "🧠",
+    "think": "💭", "reasoning": "💭",
+}
 
 SILENCE_RE = re.compile(
     r"^[\s*_~`\[\]]*\(?\s*(silent|silence|no[\s_]+response|no[\s_]+reply)"
@@ -17,7 +37,7 @@ SILENCE_RE = re.compile(
     re.IGNORECASE)
 
 
-PREVIEW_TEXT = "Mengetik…"
+PREVIEW_TEXT = "💭 Thinking…"
 
 
 TOOL_PREVIEW_CAP = 64
@@ -51,36 +71,34 @@ def _preview(label: str) -> str:
 
 
 def progress_line(name: str, label: str, done: bool) -> str:
-    """Satu baris progress TEKS POLOS (tanpa emoji).
+    """Satu baris progres ala Hermes: `💻 bash...` -> `💻 Running "cmd"`.
 
-    Client Telegram tertentu (topic/channel/desktop Linux) render
-    emoji 💻📖🔍 sebagai kotak tofu jelek — bubble progres murni teks
-    biar enak dibaca di semua client.
+    Command keliatan sejak running (label tampil dua-dua status),
+    bukan cuma sesudah done.
     """
+    emoji = tool_icon(name)
     tool = (name or "tool").strip() or "tool"
+    if tool.lower() in TERMINAL_TOOLS:
+        prev = _preview((label or "").split("\n")[0].strip() or label)
+    else:
+        prev = _preview(label)
     if not done:
-        # Lagi jalan pun command-nya ditampilin (biar keliatan mau
-        # ngapain), bukan cuma `bash…` buta.
-        if tool.lower() in TERMINAL_TOOLS:
-            prev = _preview((label or "").split("\n")[0].strip() or label)
-        else:
-            prev = _preview(label)
         if prev:
-            return f"<b>{esc(tool)}</b> {esc(prev)}…"
-        return f"<b>{esc(tool)}</b>…"
+            return f"{emoji} <b>{esc(tool)}</b> {esc(prev)}…"
+        return f"{emoji} <b>{esc(tool)}</b>…"
     if tool.lower() in TERMINAL_TOOLS:
         prev = _preview((label or "").split("\n")[0].strip() or label)
     else:
         prev = _preview(label)
     verb = TOOL_VERBS.get(tool.lower())
     if tool.lower() in TOOL_NO_PREVIEW:
-        return f"{verb}" if verb else f"<b>{esc(tool)}</b>…"
+        return f"{emoji} {verb}" if verb else f"{emoji} <b>{esc(tool)}</b>…"
     if verb and prev:
         conn = " for " if tool.lower() in TOOL_VERB_FOR else " "
-        return f'{verb}{conn}"{esc(prev)}"'
+        return f'{emoji} {verb}{conn}"{esc(prev)}"'
     if prev and prev.lower() != tool.lower():
-        return f'{esc(tool)}: "{esc(prev)}"'
-    return f"<b>{esc(tool)}</b>…"
+        return f'{emoji} {esc(tool)}: "{esc(prev)}"'
+    return f"{emoji} <b>{esc(tool)}</b>…"
 
 
 TERMINAL_TOOLS = {"bash", "shell", "terminal", "execute", "execute_code"}
@@ -88,7 +106,6 @@ TERMINAL_TOOLS = {"bash", "shell", "terminal", "execute", "execute_code"}
 # Bubble progres: tampilkan N tool terakhir.
 PROG_MAX_TOOLS = 6
 
-_COUNT_RE = re.compile(r"\(\+(\d+) baris\)")
 _SLEEP_RE = re.compile(r"^\s*sleep[\d\s.]+\s*$", re.IGNORECASE)
 
 
@@ -99,44 +116,15 @@ def _is_pure_sleep(label: str) -> bool:
     return bool(first) and bool(_SLEEP_RE.match(first))
 
 
-def _bash_short(label: str) -> str:
-    """Command pendek UTUH (tanpa marker hitungan) atau '' bila panjang."""
-    if _COUNT_RE.search(label or ""):
-        return ""
-    lines = [(ln.rstrip()) for ln in (label or "").splitlines()]
-    lines = [ln for ln in lines if ln.strip()]
-    if not lines or len(lines) > 4:
-        return ""
-    full = "\n".join(lines)
-    return full if len(full) <= 400 else ""
-
-
-def _bash_line(label: str) -> str:
-    """SATU baris rapi buat script panjang: jenis + target + hitungan
-    (teks polos, tanpa emoji)."""
-    first = ((label or "").split("\n")[0] or "").strip()
-    m = _COUNT_RE.search(label or "")
-    if m:
-        extra = f" · +{m.group(1)} baris"
-    else:
-        n = len([ln for ln in (label or "").splitlines() if ln.strip()])
-        extra = f" · +{n - 1} baris" if n > 1 else ""
-    mh = re.match(r"^\s*cat\s*(>>?)\s*(\S+)", first)
-    if mh:
-        op = "Tambah ke" if mh.group(1) == ">>" else "Tulis"
-        return f"{op} <code>{esc(mh.group(2))}</code>{extra}"
-    if re.match(r"^\s*python3?\s+-(\s|$)", first):
-        return f"Script python{extra}"
-    if re.match(r"^\s*(?:bash|sh)(\s|$)", first):
-        return f"Script bash{extra}"
-    return f"<code>{esc(first[:72])}</code>{extra}"
+def tool_icon(name: str) -> str:
+    return TOOL_ICONS.get((name or "").lower(), "🔧")
 
 
 def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) -> str:
-    """Bubble progres: command PENDEK full <pre> (copyable), script
-    PANJANG satu baris rapi. Baris spam berurutan (sleep 12/13/14…)
-    digabung (`sleep ×5`). Tanpa download file apapun. Hanya N
-    call terakhir; tertua dibuang bila melewati limit."""
+    """Bubble progres ala Hermes: tool terminal jadi header + blok <pre>
+    (satu <pre> per call, baris pertama command biar ringkas), sisanya
+    satu baris per call. Pure-sleep disembunyiin. Hanya N call terakhir;
+    tertua dibuang bila melewati limit."""
     items = list(tool_lines.values())
     if max_tools and len(items) > max_tools:
         items = items[-max_tools:]
@@ -146,76 +134,26 @@ def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) ->
         if low in TERMINAL_TOOLS:
             if _is_pure_sleep(label):
                 continue  # pacing doang, jangan penuhi bubble
-            short = _bash_short(label)
-            if short:
-                if blocks and blocks[-1][0] == f"t:{low}":
-                    blocks[-1][1].append((f"<pre>{esc(short)}</pre>", False))
-                else:
-                    blocks.append((f"t:{low}",
-                                   [(f"<b>{esc(name or 'tool')}</b>", False),
-                                    (f"<pre>{esc(short)}</pre>", False)]))
+            first = next((ln.rstrip() for ln in (label or "").splitlines()
+                          if ln.strip()), "")[:200]
+            if not first:
+                first = (name or "tool").strip()
+            if blocks and blocks[-1][0] == f"t:{low}":
+                blocks[-1][1].append(f"<pre>{esc(first)}</pre>")
             else:
-                if done:
-                    blocks.append((f"s:{name}:{label}:{done}",
-                                   [(_bash_line(label), True)]))
-                else:
-                    blocks.append((f"s:{name}:{label}:{done}",
-                                   [(_bash_line(label) + "…", True)]))
+                blocks.append((f"t:{low}",
+                               [f"{tool_icon(name)} <b>{esc(name or 'tool')}</b>",
+                                f"<pre>{esc(first)}</pre>"]))
         else:
             blocks.append((f"s:{name}:{label}:{done}",
-                           [(progress_line(name, label, done), False)]))
-    text = "\n".join(_merge_spam(
-        [(ln, mg) for _, b in blocks for ln, mg in b]))
+                           [progress_line(name, label, done)]))
+    lines = [ln for _, b in blocks for ln in b]
+    text = "\n".join(lines)
     while len(blocks) > 1 and len(text) > limit:
         blocks.pop(0)
-        text = "\n".join(_merge_spam(
-            [(ln, mg) for _, b in blocks for ln, mg in b]))
+        lines = [ln for _, b in blocks for ln in b]
+        text = "\n".join(lines)
     return text
-
-
-def _strip_tags(s: str) -> str:
-    return re.sub(r"<[^<>]+>", "", s or "")
-
-
-def _spam_key(line: str) -> str:
-    """Kunci gabung: teks tanpa tag & angka. `sleep 12 · +11 baris`
-    dan `sleep 13 · +10 baris` -> kunci sama -> gabung `sleep ×2`."""
-    t = _strip_tags(line)
-    t = re.sub(r"\d+", "", t)
-    t = " ".join(t.split())
-    return t
-
-
-def _merge_spam(pairs: list) -> list:
-    """Gabung garis mergeable berurutan berkunci sama: `sleep ×5`.
-    pairs = [(html_garis, boleh_gabung)]. Garis <pre>/lain tak gabung."""
-    out: list = []
-    i, n = 0, len(pairs)
-    while i < n:
-        ln, mg = pairs[i]
-        if not mg:
-            out.append(ln)
-            i += 1
-            continue
-        key = _spam_key(ln)
-        if not key:
-            out.append(ln)
-            i += 1
-            continue
-        j = i + 1
-        while j < n and pairs[j][1] and _spam_key(pairs[j][0]) == key:
-            j += 1
-        if j - i < 2:
-            out.append(ln)
-        else:
-            toks = _strip_tags(ln).split()
-            disp = toks[0] if toks else "cmd"
-            if len(toks) > 1 and not toks[1][:1].isdigit() \
-                    and toks[1] not in ("·", "+"):
-                disp += " " + toks[1]
-            out.append(f"{esc(disp)} ×{j - i}")
-        i = j
-    return out
 
 
 def is_silence(text: str) -> bool:

@@ -462,7 +462,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
         elif not st.tools:
             idle = now - started
             tick = int(idle // 15 * 15)
-            txt = f"Mengetik… {tick}s" if tick >= 30 else PREVIEW_TEXT
+            txt = f"💭 Thinking… {tick}s" if tick >= 30 else PREVIEW_TEXT
         else:
             txt = PREVIEW_TEXT
         if txt != last_render[0]:
