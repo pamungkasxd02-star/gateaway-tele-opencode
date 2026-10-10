@@ -72,7 +72,7 @@ def _server_env(proxy_on: bool) -> dict:
 def server_up() -> bool:
     global API_V2
     d = api("get", "/api/info", timeout=15)
-    if d is not None and not is_err(d):
+    if d is not None and not is_err(d) and not is_unsupported(d):
         API_V2 = True
         return True
     # v1 compat: /api/info serves web UI HTML -> fallback list endpoint
