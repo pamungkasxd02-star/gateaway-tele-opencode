@@ -408,14 +408,12 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
     ctx_len = _model_ctx_cached(model)
 
     def _live_ctx(st) -> str:
-        """Satu baris konteks REALTIME buat bubble progres
-        (`Konteks 12%`, update tiap detik ikut token berjalan)."""
+        """Satu baris konteks REALTIME buat bubble progres — RUMUS SAMA
+        kayak footer (peak sesi). 0 (server tak lapor) = disembunyikan,
+        bukan dipajang `0%`/`100%` ngaco."""
         try:
-            u = STATE.get_usage(key)
-            tot = (u.get("input", 0) + u.get("output", 0)
-                   + st.usage["input"] + st.usage["output"])
-            if not tot and getattr(st, "last_input", 0):
-                tot = st.last_input
+            tot = max(STATE.get_ctx_peak(key), getattr(st, "peak", 0) or 0,
+                      getattr(st, "last_input", 0) or 0)
             if not tot:
                 return ""
             if ctx_len:
@@ -592,7 +590,7 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
     footer = ""
     if CFG["telegram"].get("footer"):
         footer = hermes_footer(model=model,
-                               context_tokens=_ctx_tokens,
+                               context_tokens=_ctx_tokens if _ctx_tokens else -1,
                                context_length=ctx_len,
                                cwd=workspace, latency=elapsed)
     if footer:

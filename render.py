@@ -135,7 +135,8 @@ def _bash_line(label: str) -> str:
 
 def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) -> str:
     """Bubble progres: command PENDEK full <pre> (copyable), script
-    PANJANG satu baris rapi. Tanpa download file apapun. Hanya N
+    PANJANG satu baris rapi. Baris spam berurutan (sleep 12/13/14…)
+    digabung (`sleep ×5`). Tanpa download file apapun. Hanya N
     call terakhir; tertua dibuang bila melewati limit."""
     items = list(tool_lines.values())
     if max_tools and len(items) > max_tools:
@@ -147,24 +148,69 @@ def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) ->
             short = _bash_short(label)
             if short:
                 if blocks and blocks[-1][0] == f"t:{low}":
-                    blocks[-1][1].append(f"<pre>{esc(short)}</pre>")
+                    blocks[-1][1].append((f"<pre>{esc(short)}</pre>", False))
                 else:
                     blocks.append((f"t:{low}",
-                                   [f"<b>{esc(name or 'tool')}</b>",
-                                    f"<pre>{esc(short)}</pre>"]))
+                                   [(f"<b>{esc(name or 'tool')}</b>", False),
+                                    (f"<pre>{esc(short)}</pre>", False)]))
             else:
                 blocks.append((f"s:{name}:{label}:{done}",
-                               [_bash_line(label)]))
+                               [(_bash_line(label), True)]))
         else:
             blocks.append((f"s:{name}:{label}:{done}",
-                           [progress_line(name, label, done)]))
-    lines = [ln for _, b in blocks for ln in b]
-    text = "\n".join(lines)
+                           [(progress_line(name, label, done), False)]))
+    text = "\n".join(_merge_spam(
+        [(ln, mg) for _, b in blocks for ln, mg in b]))
     while len(blocks) > 1 and len(text) > limit:
         blocks.pop(0)
-        lines = [ln for _, b in blocks for ln in b]
-        text = "\n".join(lines)
+        text = "\n".join(_merge_spam(
+            [(ln, mg) for _, b in blocks for ln, mg in b]))
     return text
+
+
+def _strip_tags(s: str) -> str:
+    return re.sub(r"<[^<>]+>", "", s or "")
+
+
+def _spam_key(line: str) -> str:
+    """Kunci gabung: teks tanpa tag & angka. `sleep 12 · +11 baris`
+    dan `sleep 13 · +10 baris` -> kunci sama -> gabung `sleep ×2`."""
+    t = _strip_tags(line)
+    t = re.sub(r"\d+", "", t)
+    t = " ".join(t.split())
+    return t
+
+
+def _merge_spam(pairs: list) -> list:
+    """Gabung garis mergeable berurutan berkunci sama: `sleep ×5`.
+    pairs = [(html_garis, boleh_gabung)]. Garis <pre>/lain tak gabung."""
+    out: list = []
+    i, n = 0, len(pairs)
+    while i < n:
+        ln, mg = pairs[i]
+        if not mg:
+            out.append(ln)
+            i += 1
+            continue
+        key = _spam_key(ln)
+        if not key:
+            out.append(ln)
+            i += 1
+            continue
+        j = i + 1
+        while j < n and pairs[j][1] and _spam_key(pairs[j][0]) == key:
+            j += 1
+        if j - i < 2:
+            out.append(ln)
+        else:
+            toks = _strip_tags(ln).split()
+            disp = toks[0] if toks else "cmd"
+            if len(toks) > 1 and not toks[1][:1].isdigit() \
+                    and toks[1] not in ("·", "+"):
+                disp += " " + toks[1]
+            out.append(f"{esc(disp)} ×{j - i}")
+        i = j
+    return out
 
 
 def is_silence(text: str) -> bool:
