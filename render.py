@@ -447,12 +447,16 @@ def md_to_html(text: str) -> str:
                                       "</code>"), text)
         # 2. escape sisa HTML
         text = _html.escape(text)
-        # 3. heading -> bold (hierarki besar); HR -> divider tipis;
-        # list -> bullet • rapi. Semua sebelum bold/italic supaya marker
-        # `---`/`***` tak dimakan pola inline.
-        text = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", text)
+        # 3. heading -> bold + baris kosong (lega, tidak tindih dengan
+        # paragraf bawahnya). Bold di DALAM judul dibuang dulu supaya
+        # tak jadi <b> di dalam <b> yang rendernya tindih.
+        def _heading(m):
+            inner = re.sub(r"\*\*(.+?)\*\*", r"\1", m.group(1))
+            inner = re.sub(r"__(.+?)__", r"\1", inner)
+            return f"<b>{inner}</b>\n"
+        text = re.sub(r"(?m)^#{1,6}\s+(.+)$", _heading, text)
         text = re.sub(r"(?m)^[ \t]*(?:---+|\*\*\*+|___+)[ \t]*$",
-                      "────────", text)
+                      "────────\n", text)
         text = re.sub(r"(?m)^([ \t]*)[-*+][ \t]+", r"\1• ", text)
         text = re.sub(r"(?m)^([ \t]*)\d+[.)][ \t]+",
                       lambda m: f"{m.group(1)}{m.group(0).strip().split()[0]} ",
@@ -522,6 +526,10 @@ def md_to_html(text: str) -> str:
         # Sisa holder (seharusnya tak ada) → buang biar tak ada \x00 mentah.
         if "\x00" in text:
             text = re.sub(r"\x00\d+\x00", "", text)
+        # Lega: baris kosong di sekitar blok <pre> (kotak tak nempel/
+        # tindih dengan paragraf), lalu rapikan newline berlebih.
+        text = re.sub(r"([^\n])\n(<pre>)", r"\1\n\n\2", text)
+        text = re.sub(r"(</pre>)\n([^\n])", r"\1\n\n\2", text)
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
         return _balance_or_plain(text)
     except Exception:  # noqa: BLE001
