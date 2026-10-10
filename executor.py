@@ -25,6 +25,7 @@ import base64
 import json
 import os
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -159,9 +160,15 @@ def _auth_header() -> dict:
             "Content-Type": "application/json"}
 
 
+def _looks_html(raw: bytes) -> bool:
+    head = (raw or b"")[:200].lstrip().lower()
+    return head.startswith(b"<!doctype html") or head.startswith(b"<html")
+
+
 def api(method: str, path: str, body=None, timeout: int = 90):
     """HTTP langsung ke server privat (tanpa CLI: tanpa batas output 256KB,
-    tanpa spawn proses per call). Kontrak tetap: data / True / __err."""
+    tanpa spawn proses per call). Kontrak: data / True / __err /
+    __unsupported (endpoint tak ada di server ini -> HTML fallback)."""
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(BASE + path, data=data,
                                  headers=_auth_header(),
@@ -169,6 +176,7 @@ def api(method: str, path: str, body=None, timeout: int = 90):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
+            ctype = (r.headers.get_content_type() or "").lower()
     except urllib.error.HTTPError as e:
         try:
             err = json.loads(e.read().decode() or "{}")
@@ -183,18 +191,31 @@ def api(method: str, path: str, body=None, timeout: int = 90):
     except Exception as e:  # noqa: BLE001
         return {"__err": str(e)[:300]}
     if not raw.strip():
-        return True  # sukses tanpa body (delete/background/revert)
+        return True  # sukses tanpa body (delete/background)
+    if ctype == "text/html" or _looks_html(raw):
+        return {"__unsupported": path}  # fallback SPA, bukan API beneran
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
         return {"__err": f"respons API rusak ({path})"}
+    if payload is None:
+        return True
     if isinstance(payload, dict) and "data" in payload:
         return payload.get("data")
-    return payload  # sebagian endpoint (/api/info) tak bungkus data
+    return payload  # sebagian endpoint tak bungkus data
 
 
 def is_err(d) -> bool:
     return isinstance(d, dict) and "__err" in d
+
+
+def is_unsupported(d) -> bool:
+    """True bila endpoint tak diimplementasi server ini."""
+    return isinstance(d, dict) and "__unsupported" in d
+
+
+UNSUP_MSG = ("Fitur ini tak didukung server OpenCode yang jalan "
+             "(endpoint belum ada).")
 
 
 # ---------------------------------------------------------------------------
@@ -299,12 +320,16 @@ def messages(sid: str):
 
 def session_info(sid: str):
     d = api("get", f"/api/session/{sid}")
-    return d if isinstance(d, dict) else {}
+    if not isinstance(d, dict) or is_err(d) or is_unsupported(d):
+        return {}
+    return d
 
 
 def context_info(sid: str):
     d = api("get", f"/api/session/{sid}/context")
-    return d if isinstance(d, dict) else {}
+    if not isinstance(d, dict) or is_err(d) or is_unsupported(d):
+        return {}
+    return d
 
 
 def pending_permissions():
@@ -324,19 +349,23 @@ def reply_permission(sid: str, request_id: str, allow: bool):
         r = api("post",
                 f"/api/session/{sid}/permission/{request_id}/reply",
                 body)
-        if not is_err(r):
+        if not is_err(r) and not is_unsupported(r):
             return r
     return None
 
 
 def skill_list():
     d = api("get", "/api/skill")
-    return d if isinstance(d, list) else (d or {}).get("skills", [])
+    if isinstance(d, list):
+        return d
+    return (d or {}).get("skills") or (d or {}).get("data") or []
 
 
 def command_list():
     d = api("get", "/api/command")
-    return d if isinstance(d, list) else (d or {}).get("commands", [])
+    if isinstance(d, list):
+        return d
+    return (d or {}).get("commands") or (d or {}).get("data") or []
 
 
 def model_list():
@@ -398,8 +427,8 @@ def export_session(sid: str, path: str):
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             blob = r.read()
-            if not blob:
-                return False
+            if not blob or _looks_html(blob):
+                return False  # endpoint tak ada (HTML fallback), bukan file
             with open(path, "wb") as f:
                 f.write(blob)
             return os.path.exists(path)
@@ -427,7 +456,28 @@ class TurnState:
         # (JANGAN sum: server lapor per-message, sum = bengkak 484%.)
         self.error = ""
         self.done = False
+        self.stopped = False  # True bila /stop lokal memotong polling
         self.sid = ""
+
+
+_STOP_LOCK = threading.Lock()
+_STOP: dict = {}  # sid -> True (flag /stop lokal, server tak dukung)
+
+
+def request_stop(sid: str) -> None:
+    """Minta polling turn berhenti (dipakai /stop)."""
+    with _STOP_LOCK:
+        _STOP[sid] = True
+
+
+def _stopped(sid: str) -> bool:
+    with _STOP_LOCK:
+        return bool(_STOP.get(sid))
+
+
+def _stop_consume(sid: str) -> None:
+    with _STOP_LOCK:
+        _STOP.pop(sid, None)
 
 
 def _brief_scalar(inp: dict, keys: list) -> str:
@@ -610,12 +660,14 @@ def _baseline(sid: str) -> tuple:
 
 def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
              interval: float = 1.0, no_output_limit: int = 420,
-             files: list = None):
+             files: list = None, stop_sid: str = ""):
     """Kirim prompt lalu polling sampai turn selesai. Balikin TurnState.
 
     Anti-ngeloop: baseline id + after_time dari respons POST
     (server kirim `timeCreated` top-level, BUKAN `time.created` —
     salah baca = user_time 0 = langsung pulang bawa jawaban LAMA).
+    stop_sid: bila /stop diminta (request_stop), polling dipotong dan
+    state dipulang dengan stopped=True (server tak dukung interrupt).
     Watchdog: diam total (tanpa teks/tool) lebih dari no_output_limit
     dianggap macet — stop nunggu, balikin error jelas (user tak staring
     "Thinking…" selamanya).
@@ -623,6 +675,7 @@ def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
     def _post(body):
         return api("post", f"/api/session/{sid}/prompt", body, timeout=120)
 
+    _stop_consume(sid)  # flag basi dari turn lama jangan bunuh turn baru
     base_ids, base_max = _baseline(sid)
     body = {"text": prompt} if API_V2 else {"prompt": {"text": prompt}}
     if files:
@@ -667,6 +720,12 @@ def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
     last = None
     while time.time() - t0 < timeout:
         time.sleep(interval)
+        if stop_sid and _stopped(stop_sid):
+            _stop_consume(stop_sid)
+            st = parse_messages(messages(sid), user_time, base_ids)
+            st.done = True
+            st.stopped = True
+            return st
         st = parse_messages(messages(sid), user_time, base_ids)
         if on_update and st != last:
             last = st

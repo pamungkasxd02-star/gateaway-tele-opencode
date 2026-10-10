@@ -303,7 +303,10 @@ def handle_hermes(c: str, chat_id: int, thread_id, user_id: int,
             send_rich(chat_id, "Belum ada sesi — kirim pesan dulu.")
             return True
         r = executor.revert_clear(sid)
-        if executor.is_err(r):
+        if executor.is_unsupported(r):
+            send_rich(chat_id, "Undo tak didukung server ini. "
+                               "<code>/new</code> buat mulai segar.")
+        elif executor.is_err(r):
             send_rich(chat_id, f"❌ undo gagal: {esc(r.get('__err', '')[:150])}")
         else:
             send_rich(chat_id, "✅ Undo — revert terakhir dibersihkan.")
@@ -538,7 +541,10 @@ def handle_hermes(c: str, chat_id: int, thread_id, user_id: int,
         rest = " ".join(args[2:])
         send_rich(chat_id, f"Menjalankan <code>/{esc(name)}</code> …")
         r = executor.run_command(sid, name, rest)
-        if executor.is_err(r):
+        if executor.is_unsupported(r):
+            send_rich(chat_id, "Perintah sesi tak didukung server ini. "
+                               "Ketik langsung sebagai chat biasa.")
+        elif executor.is_err(r):
             send_rich(chat_id, f"❌ gagal: {esc(r.get('__err', '')[:150])}")
         else:
             send_rich(chat_id, "✅ Dijalankan.")
@@ -559,9 +565,14 @@ def handle_hermes(c: str, chat_id: int, thread_id, user_id: int,
         if not sid:
             send_rich(chat_id, "Belum ada sesi.")
             return True
-        d = executor.diff(sid) or {}
-        body = json.dumps(d)[:1800] if d else "(tidak ada perubahan)"
-        send_rich(chat_id, "<b>Diff</b>\n<pre>" + esc(body) + "</pre>")
+        d = executor.diff(sid)
+        if executor.is_unsupported(d) or d is None:
+            send_rich(chat_id, "Diff tak didukung server ini.")
+        elif executor.is_err(d):
+            send_rich(chat_id, f"❌ diff gagal: {esc(d.get('__err', '')[:150])}")
+        else:
+            body = json.dumps(d)[:1800] if d else "(tidak ada perubahan)"
+            send_rich(chat_id, "<b>Diff</b>\n<pre>" + esc(body) + "</pre>")
         return True
 
     if c == "export":
@@ -645,7 +656,16 @@ def handle_extra(c: str, chat_id: int, thread_id, user_id: int,
             send_rich(chat_id, "✅ Balik ke model default profil.")
         else:
             STATE.set_model(key, args[1])
-            send_rich(chat_id, f"✅ Model: <code>{esc(args[1])}</code>")
+            sid = STATE.get_session(key)
+            note = ""
+            if sid:
+                r = executor.switch_model(sid, args[1])
+                if executor.is_unsupported(r):
+                    note = ("\nServer tak dukung ganti mid-session — "
+                            "tersimpan, <code>/new</code> untuk pakai.")
+                elif executor.is_err(r):
+                    note = f"\n⚠️ {esc(r.get('__err', '')[:120])}"
+            send_rich(chat_id, f"✅ Model: <code>{esc(args[1])}</code>{note}")
         return True
 
     if c == "agent":
@@ -660,7 +680,16 @@ def handle_extra(c: str, chat_id: int, thread_id, user_id: int,
             send_rich(chat_id, "✅ Balik ke agent default profil.")
         else:
             STATE.set_agent(key, args[1])
-            send_rich(chat_id, f"✅ Agent: <code>{esc(args[1])}</code>")
+            sid = STATE.get_session(key)
+            note = ""
+            if sid:
+                r = executor.switch_agent(sid, args[1])
+                if executor.is_unsupported(r):
+                    note = ("\nServer tak dukung ganti mid-session — "
+                            "tersimpan, <code>/new</code> untuk pakai.")
+                elif executor.is_err(r):
+                    note = f"\n⚠️ {esc(r.get('__err', '')[:120])}"
+            send_rich(chat_id, f"✅ Agent: <code>{esc(args[1])}</code>{note}")
         return True
 
     if c == "session":
@@ -692,9 +721,13 @@ def handle_extra(c: str, chat_id: int, thread_id, user_id: int,
             return True
         send_rich(chat_id, "🛠️ Menjalankan init project (native)…")
         r = executor.run_command(sid, "init")
-        send_rich(chat_id, "❌ init gagal: "
-                  + esc(r.get("__err", "")[:150]) if executor.is_err(r)
-                  else "✅ init dijalankan — ikuti panduan agent.")
+        if executor.is_unsupported(r):
+            send_rich(chat_id, "Init tak didukung server ini.")
+        elif executor.is_err(r):
+            send_rich(chat_id, "❌ init gagal: "
+                      + esc(r.get("__err", "")[:150]))
+        else:
+            send_rich(chat_id, "✅ init dijalankan — ikuti panduan agent.")
         return True
 
     if c == "review":
@@ -705,9 +738,14 @@ def handle_extra(c: str, chat_id: int, thread_id, user_id: int,
         target = args[1] if len(args) > 1 else ""
         send_rich(chat_id, "🔎 Review changes (native)…")
         r = executor.run_command(sid, "review", target)
-        send_rich(chat_id, "❌ review gagal: "
-                  + esc(r.get("__err", "")[:150]) if executor.is_err(r)
-                  else "✅ review dijalankan — hasilnya dari agent.")
+        if executor.is_unsupported(r):
+            send_rich(chat_id, "Review tak didukung server ini. "
+                               "Minta langsung via chat biasa.")
+        elif executor.is_err(r):
+            send_rich(chat_id, "❌ review gagal: "
+                      + esc(r.get("__err", "")[:150]))
+        else:
+            send_rich(chat_id, "✅ review dijalankan — hasilnya dari agent.")
         return True
 
     if handle_hermes(c, chat_id, thread_id, user_id, args, msg_id):
@@ -1150,7 +1188,8 @@ def handle_branch(chat_id: int, thread_id, user_id: int, args: list) -> None:
         return
     fk = executor.fork_session(sid)
     if not fk:
-        send_rich(chat_id, "❌ Branch gagal (sesi kosong?).")
+        send_rich(chat_id, "❌ Branch gagal — server tak dukung fork. "
+                           "Pakai <code>/new</code> buat sesi segar.")
         return
     STATE.set_session(key, fk)
     name = " ".join(args[1:]).strip()
@@ -1242,11 +1281,12 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
         if not sid:
             send_rich(chat_id, "Nggak ada sesi yang lagi jalan.")
             return
-        r = executor.interrupt(sid)
-        if executor.is_err(r):
-            send_rich(chat_id, f"❌ Gagal stop: {esc(r.get('__err', '')[:120])}")
-        else:
-            send_rich(chat_id, "🛑 Dihentikan.")
+        executor.request_stop(sid)  # potong polling lokal (pasti jalan)
+        try:
+            executor.interrupt(sid)  # best-effort ke server
+        except Exception:  # noqa: BLE001
+            pass
+        send_rich(chat_id, "🛑 Stop dikirim — turn berhenti.")
     elif c == "model":
         name, prof = resolve_profile(chat_id, thread_id)
         if len(args) < 2:

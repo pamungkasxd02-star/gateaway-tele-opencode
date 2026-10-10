@@ -473,12 +473,24 @@ def _run_agent_inner(key: str, chat_id, thread_id, prompt: str,
         st = executor.run_turn(sid, full_prompt, on_update=render,
                                timeout=timeout_override or
                                int(prof.get("timeout_sec", 900)),
-                               files=files or None)
+                               files=files or None, stop_sid=sid)
     finally:
         stop_typing.set()
         if pinned:
             TG.unpin(chat_id, reply_to)
     elapsed = time.time() - started
+    if getattr(st, "stopped", False):
+        if msg_id:
+            TG.edit(chat_id, msg_id, "🛑 Dihentikan.")
+        for pid_ in prog_ids:
+            if pid_:
+                try:
+                    TG.call("deleteMessage", chat_id=chat_id,
+                            message_id=pid_)
+                except Exception:  # noqa: BLE001
+                    pass
+        log(f"[{key}] dihentikan via /stop ({elapsed:.1f}s)")
+        return
     for r_ in st.reasoning:
         if r_ not in reasoning_seen:
             reasoning_seen.append(r_)
