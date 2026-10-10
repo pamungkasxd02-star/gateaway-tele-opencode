@@ -429,15 +429,19 @@ def _brief_scalar(inp: dict, keys: list) -> str:
 
 
 def _terminal_label(inp: dict) -> str:
-    """Label bash FULL tanpa potong (operator mau lihat lengkap + bisa
-    dicopy). Hanya buang baris kosong pinggir. Pengaman 50KB lawan
-    payload gila (nyaris tak pernah kena)."""
+    """Label bash: command PENDEK lolos utuh; command PANJANG cukup
+    baris pertama + hitungan baris (render yang merapikan)."""
     for k in ("command", "script", "cmd", "code"):
         v = inp.get(k)
         if isinstance(v, str) and v.strip():
-            if len(v) > 50000:
-                v = v[:50000] + "\n… [dipotong sistem 50KB]"
-            return v.strip()
+            lines = [ln.rstrip() for ln in v.strip().splitlines()]
+            lines = [ln for ln in lines if ln.strip()]
+            if not lines:
+                continue
+            full = "\n".join(lines)
+            if len(lines) <= 4 and len(full) <= 400:
+                return full
+            return f"{lines[0][:180]}\n… (+{len(lines) - 1} baris)"
     return ""
 
 

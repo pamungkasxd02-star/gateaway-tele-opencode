@@ -94,24 +94,70 @@ def progress_line(name: str, label: str, done: bool) -> str:
 
 TERMINAL_TOOLS = {"bash", "shell", "terminal", "execute", "execute_code"}
 
-# Bubble progres: tampilkan N tool terakhir, SATU baris per call.
+# Bubble progres: tampilkan N tool terakhir.
 PROG_MAX_TOOLS = 6
+
+_COUNT_RE = re.compile(r"\(\+(\d+) baris\)")
+
+
+def _bash_short(label: str) -> str:
+    """Command pendek UTUH (tanpa marker hitungan) atau '' bila panjang."""
+    if _COUNT_RE.search(label or ""):
+        return ""
+    lines = [(ln.rstrip()) for ln in (label or "").splitlines()]
+    lines = [ln for ln in lines if ln.strip()]
+    if not lines or len(lines) > 4:
+        return ""
+    full = "\n".join(lines)
+    return full if len(full) <= 400 else ""
+
+
+def _bash_line(label: str) -> str:
+    """SATU baris rapi buat script panjang: jenis + target + hitungan."""
+    first = ((label or "").split("\n")[0] or "").strip()
+    m = _COUNT_RE.search(label or "")
+    extra = f" · +{m.group(1)} baris" if m else ""
+    mh = re.match(r"^\s*cat\s*(>>?)\s*(\S+)", first)
+    if mh:
+        op = "Tambah ke" if mh.group(1) == ">>" else "Tulis"
+        return f"✏️ {op} <code>{esc(mh.group(2))}</code>{extra}"
+    if re.match(r"^\s*python3?\s+-(\s|$)", first):
+        return f"🐍 Script python{extra}"
+    if re.match(r"^\s*(?:bash|sh)(\s|$)", first):
+        return f"💻 Script bash{extra}"
+    return f"💻 <code>{esc(first[:72])}</code>{extra}"
 
 
 def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) -> str:
-    """Bubble progres SUPER-RINGKAS: satu baris per call.
-
-    Command full TIDAK di sini (ada di file lampiran bash-log) —
-    bubble cukup judul kerjaan (`💻 Running "ls ..."`) biar chat tidak
-    ketindis tembok bash. Hanya N call terakhir.
-    """
+    """Bubble progres: command PENDEK full <pre> (copyable), script
+    PANJANG satu baris rapi. Tanpa download file apapun. Hanya N
+    call terakhir; tertua dibuang bila melewati limit."""
     items = list(tool_lines.values())
     if max_tools and len(items) > max_tools:
         items = items[-max_tools:]
-    lines = [progress_line(name, label, done) for name, label, done in items]
+    blocks: list = []
+    for name, label, done in items:
+        low = (name or "").lower()
+        if low in TERMINAL_TOOLS:
+            short = _bash_short(label)
+            if short:
+                if blocks and blocks[-1][0] == f"t:{low}":
+                    blocks[-1][1].append(f"<pre>{esc(short)}</pre>")
+                else:
+                    blocks.append((f"t:{low}",
+                                   [f"{tool_icon(name)} <b>{esc(name or 'tool')}</b>",
+                                    f"<pre>{esc(short)}</pre>"]))
+            else:
+                blocks.append((f"s:{name}:{label}:{done}",
+                               [_bash_line(label)]))
+        else:
+            blocks.append((f"s:{name}:{label}:{done}",
+                           [progress_line(name, label, done)]))
+    lines = [ln for _, b in blocks for ln in b]
     text = "\n".join(lines)
-    while len(lines) > 1 and len(text) > limit:
-        lines.pop(0)
+    while len(blocks) > 1 and len(text) > limit:
+        blocks.pop(0)
+        lines = [ln for _, b in blocks for ln in b]
         text = "\n".join(lines)
     return text
 
