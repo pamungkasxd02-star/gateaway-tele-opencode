@@ -80,6 +80,14 @@ def progress_line(name: str, label: str, done: bool) -> str:
     """
     tool = (name or "tool").strip() or "tool"
     if not done:
+        # Lagi jalan pun command-nya ditampilin (biar keliatan mau
+        # ngapain), bukan cuma `bash…` buta.
+        if tool.lower() in TERMINAL_TOOLS:
+            prev = _preview_40((label or "").split("\n")[0].strip() or label)
+        else:
+            prev = _preview_40(label)
+        if prev:
+            return f"<b>{esc(tool)}</b> {esc(prev)}…"
         return f"<b>{esc(tool)}</b>…"
     if tool.lower() in TERMINAL_TOOLS:
         prev = _preview_40((label or "").split("\n")[0].strip() or label)
@@ -129,7 +137,11 @@ def _bash_line(label: str) -> str:
     (teks polos, tanpa emoji)."""
     first = ((label or "").split("\n")[0] or "").strip()
     m = _COUNT_RE.search(label or "")
-    extra = f" · +{m.group(1)} baris" if m else ""
+    if m:
+        extra = f" · +{m.group(1)} baris"
+    else:
+        n = len([ln for ln in (label or "").splitlines() if ln.strip()])
+        extra = f" · +{n - 1} baris" if n > 1 else ""
     mh = re.match(r"^\s*cat\s*(>>?)\s*(\S+)", first)
     if mh:
         op = "Tambah ke" if mh.group(1) == ">>" else "Tulis"
@@ -164,8 +176,12 @@ def prog_html(tool_lines, limit: int = 3700, max_tools: int = PROG_MAX_TOOLS) ->
                                    [(f"<b>{esc(name or 'tool')}</b>", False),
                                     (f"<pre>{esc(short)}</pre>", False)]))
             else:
-                blocks.append((f"s:{name}:{label}:{done}",
-                               [(_bash_line(label), True)]))
+                if done:
+                    blocks.append((f"s:{name}:{label}:{done}",
+                                   [(_bash_line(label), True)]))
+                else:
+                    blocks.append((f"s:{name}:{label}:{done}",
+                                   [(_bash_line(label) + "…", True)]))
         else:
             blocks.append((f"s:{name}:{label}:{done}",
                            [(progress_line(name, label, done), False)]))
