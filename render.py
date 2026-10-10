@@ -1,34 +1,13 @@
 #!/usr/bin/env python3
-"""Rendering ala Hermes: ikon/verb tool, silence, markdown->HTML Telegram,
-tabel, pagination, footer runtime-metadata. Fungsi murni + baca CFG."""
+"""Rendering jawaban Telegram: progress teks-polos per tool, silence,
+markdown->HTML, tabel->bullets, pagination, footer runtime-metadata.
+Fungsi murni + baca CFG."""
 
 import html as _html
 import os
 import re
 
 from core import CFG, esc
-
-TOOL_ICONS = {
-    "shell": "💻", "bash": "💻", "terminal": "💻", "run": "💻",
-    "execute": "💻", "execute_code": "🐍",
-    "web_search": "🔍", "search": "🔍", "webfetch": "🔍",
-    "fetch": "🌐", "web": "🌐", "browser": "🌐",
-    "web_extract": "📄", "extract": "📄",
-    "read": "📖", "view": "📖",
-    "write": "✏️", "edit": "✏️", "patch": "✏️", "create": "✏️",
-    "apply_patch": "✏️",
-    "python": "🐍", "code": "🐍",
-    "glob": "🗂", "ls": "🗂", "list": "🗂",
-    "grep": "🔎", "codesearch": "🔎",
-    "skill": "🧩", "skills": "🧩",
-    "task": "🤖", "delegate": "🚀", "subagent": "🤖",
-    "todowrite": "📋", "todoread": "📋", "todo": "📋",
-    "question": "❓", "clarify": "❓", "ask": "❓",
-    "plan": "🗺", "review": "🔎",
-    "image": "🖼", "vision": "🖼",
-    "memory": "🧠", "remember": "🧠",
-    "think": "💭", "reasoning": "💭",
-}
 
 
 SILENCE_RE = re.compile(
@@ -64,7 +43,7 @@ TOOL_VERB_FOR = {"web_search", "search", "grep", "codesearch"}
 TOOL_NO_PREVIEW = {"todo", "todowrite", "todoread"}
 
 
-def _preview_40(label: str) -> str:
+def _preview(label: str) -> str:
     one = " ".join((label or "").split())
     if len(one) > TOOL_PREVIEW_CAP:
         return one[:TOOL_PREVIEW_CAP - 1] + "…"
@@ -83,16 +62,16 @@ def progress_line(name: str, label: str, done: bool) -> str:
         # Lagi jalan pun command-nya ditampilin (biar keliatan mau
         # ngapain), bukan cuma `bash…` buta.
         if tool.lower() in TERMINAL_TOOLS:
-            prev = _preview_40((label or "").split("\n")[0].strip() or label)
+            prev = _preview((label or "").split("\n")[0].strip() or label)
         else:
-            prev = _preview_40(label)
+            prev = _preview(label)
         if prev:
             return f"<b>{esc(tool)}</b> {esc(prev)}…"
         return f"<b>{esc(tool)}</b>…"
     if tool.lower() in TERMINAL_TOOLS:
-        prev = _preview_40((label or "").split("\n")[0].strip() or label)
+        prev = _preview((label or "").split("\n")[0].strip() or label)
     else:
-        prev = _preview_40(label)
+        prev = _preview(label)
     verb = TOOL_VERBS.get(tool.lower())
     if tool.lower() in TOOL_NO_PREVIEW:
         return f"{verb}" if verb else f"<b>{esc(tool)}</b>…"
@@ -243,10 +222,6 @@ def is_silence(text: str) -> bool:
     stripped = (text or "").strip()
     return bool(stripped) and len(stripped) <= 64 and bool(
         SILENCE_RE.match(stripped))
-
-
-def tool_icon(name: str) -> str:
-    return TOOL_ICONS.get((name or "").lower(), "🔧")
 
 
 def fmt_latency(seconds: float) -> str:

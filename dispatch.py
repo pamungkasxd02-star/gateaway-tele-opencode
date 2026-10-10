@@ -9,7 +9,7 @@ from collections import deque
 
 import executor
 from commands import BUTTON_MAP, handle_callback, handle_command
-from core import (CFG, RUNTIME, STATE, esc, log, resolve_profile, session_key)
+from core import (CFG, RUNTIME, STATE, esc, log, session_key)
 from pipeline import (build_prompt, collect_media, enqueue, loop_guard_allow,
                       run_agent)
 from tg import TG, send_rich

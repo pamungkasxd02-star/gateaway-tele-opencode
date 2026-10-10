@@ -13,10 +13,10 @@ import urllib.request
 from collections import OrderedDict
 
 import executor
-from core import CACHE_DIR, CFG, STATE, esc, log, resolve_profile, session_key
+from core import CFG, STATE, esc, log, resolve_profile, session_key
 from render import (PREVIEW_TEXT, fmt_tokens, hermes_footer, is_silence,
                     md_to_html, model_short, prog_html, split_pages)
-from tg import SEND_MAX_BYTES, TG
+from tg import TG
 
 MEDIA_EXTS = {
     "images": {"png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "svg"},
