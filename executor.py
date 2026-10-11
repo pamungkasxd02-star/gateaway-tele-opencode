@@ -746,11 +746,13 @@ def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
             st = parse_messages(messages(sid), user_time, base_ids)
             if not st.texts and not st.tools and not st.done:
                 st.error = (st.error or
-                            f"model diam {no_output_limit}s tanpa output "
+                            f"model diam {int(time.time() - t0)}s tanpa output "
                             "(macet/lamban). Coba /retry atau /model lain.")
                 st.done = True
                 return st
     st = parse_messages(messages(sid), user_time, base_ids)
-    st.error = st.error or "timeout"
+    st.error = st.error or (
+        f"timeout {int(timeout)}s — server mungkin masih jalan "
+        "(mis. sleep panjang). /retry buat lanjut, /bg buat background.")
     st.done = True
     return st

@@ -104,7 +104,7 @@
         "model": "opencode/ling-3.1-flash-free",
         "agent": "blackhat",
         "auto_approve": true,
-        "timeout_sec": 900,
+        "timeout_sec": 1800,
         "session_dir": "/opt/ops/yatim-full"
       }
     }

@@ -78,7 +78,7 @@ DEFAULT_CFG = {
                 "model": "",
                 "agent": "",
                 "auto_approve": True,
-                "timeout_sec": 900,
+                "timeout_sec": 1800,
             },
         },
     },
