@@ -2,6 +2,7 @@
 """Semua command Telegram: menu/nav, callback tombol, Hermes-set, mirror CLI,
 cron, dan dispatcher handle_command."""
 
+import difflib
 import json
 import os
 import re
@@ -244,6 +245,19 @@ def handle_callback(q: dict) -> None:
                 text="Sesi dipilih")
         text, kb = nav_content("sessions", chat_id, thread_id)
         edit_rich(chat_id, mid, text, kb)
+        return
+
+    if data.startswith("sug:"):
+        # tombol saran typo: jalankan command yang dipilih
+        cmd = (data.split(":", 1)[1] or "").strip().lstrip("/")
+        TG.call("answerCallbackQuery", callback_query_id=cbq_id,
+                text=f"Running /{cmd}")
+        try:
+            edit_rich(chat_id, mid, f"Running <code>/{esc(cmd)}</code> …")
+        except Exception:  # noqa: BLE001
+            pass
+        handle_command(chat_id, thread_id, user_id, ["/" + cmd],
+                       full_text="/" + cmd, msg_id=mid)
         return
 
     if data.startswith("ea:"):
@@ -1251,6 +1265,66 @@ def handle_config(chat_id: int, thread_id, user_id: int, args: list) -> None:
         (k, v) for k, v in rows]))
 
 
+KNOWN_COMMANDS = frozenset({
+    "start", "help", "keyboard", "menu", "new", "reset", "stop", "model",
+    "models", "agent", "agents", "session", "sessions", "status", "usage",
+    "context", "ctx", "whoami", "sethome", "proxy", "rotate", "limits",
+    "workspace", "topic", "platforms", "platform", "restart", "cron",
+    "footer", "goal", "goals", "subgoal", "loop", "heartbeat", "hb",
+    "queue", "q", "steer", "branch", "fork", "plan", "egress", "config",
+    "retry", "undo", "compress", "compact", "title", "rename", "resume",
+    "reasoning", "personality", "insights", "stats", "mcp", "auth",
+    "plugins", "commands", "opencode", "run", "skills", "diff", "export",
+    "update", "init", "review", "bg", "btw", "approve", "deny",
+    "reload-mcp", "reloadmcp",
+})
+
+_sug_cache: dict = {"ts": 0.0, "skills": []}
+
+
+def _skill_names() -> list:
+    now = time.time()
+    if now - _sug_cache["ts"] > 300:
+        try:
+            _sug_cache["skills"] = [
+                s.get("name") or s.get("id") or ""
+                for s in (executor.skill_list() or [])]
+        except Exception:  # noqa: BLE001
+            _sug_cache["skills"] = []
+        _sug_cache["ts"] = now
+    return [s for s in _sug_cache["skills"] if s]
+
+
+def _maybe_correct(chat_id: int, thread_id, user_id: int, c: str,
+                   args: list, full_text: str, msg_id: int) -> bool:
+    """Typo-tolerant: `/statsu` mirip banget -> langsung jalan `/stats`
+    (+catatan koreksi). Mirip sedang -> tombol saran. Asing -> False
+    (lanjut jalur skill). True bila sudah ditangani."""
+    if not c or len(c) < 3:
+        return False
+    cands = sorted(KNOWN_COMMANDS) + _skill_names()
+    matches = difflib.get_close_matches(c, cands, n=3, cutoff=0.6)
+    matches = [m for m in matches if m != c]
+    if not matches:
+        return False
+    best = matches[0]
+    ratio = difflib.SequenceMatcher(None, c, best).ratio()
+    if ratio >= 0.85 and best in KNOWN_COMMANDS:
+        fixed = ["/" + best] + list(args[1:])
+        send_rich(chat_id,
+                  f"Dikoreksi <code>/{esc(c)}</code> → "
+                  f"<code>/{esc(best)}</code> …")
+        handle_command(chat_id, thread_id, user_id, fixed,
+                       full_text=" ".join(fixed), msg_id=msg_id)
+        return True
+    kb = {"inline_keyboard": [
+        [{"text": f"/{m}", "callback_data": f"sug:{m}"}] for m in matches]}
+    send_rich(chat_id,
+              f"Tidak kenal <code>/{esc(c)}</code> — maksudmu yang mana?",
+              kb)
+    return True
+
+
 def handle_command(chat_id: int, thread_id, user_id: int, args: list,
                    full_text: str = "", msg_id: int = 0) -> None:
     c = args[0].lower().lstrip("/").split("@")[0]
@@ -1467,6 +1541,11 @@ def handle_command(chat_id: int, thread_id, user_id: int, args: list,
         handle_config(chat_id, thread_id, user_id, args)
     else:
         if handle_extra(c, chat_id, thread_id, user_id, args, msg_id):
+            return
+        # Typo-tolerant: salah ketik dikoreksi/disaranin dulu —
+        # jangan langsung bakar turn 300s sebagai "skill".
+        if _maybe_correct(chat_id, thread_id, user_id, c, args,
+                          full_text, msg_id):
             return
         # gaya Hermes: /command tak dikenal = invokasi skill ke agent.
         # Timeout pendek (300s): skill asing tak boleh bakar turn panjang.
