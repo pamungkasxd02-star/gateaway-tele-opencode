@@ -662,7 +662,8 @@ def _baseline(sid: str) -> tuple:
 
 def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
              interval: float = 1.0, no_output_limit: int = 420,
-             files: list = None, stop_sid: str = ""):
+             files: list = None, stop_sid: str = "",
+             max_total: int = 0):
     """Kirim prompt lalu polling sampai turn selesai. Balikin TurnState.
 
     Anti-ngeloop: baseline id + after_time dari respons POST
@@ -670,6 +671,10 @@ def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
     salah baca = user_time 0 = langsung pulang bawa jawaban LAMA).
     stop_sid: bila /stop diminta (request_stop), polling dipotong dan
     state dipulang dengan stopped=True (server tak dukung interrupt).
+    TANPA timeout kaku: deadline `timeout` nambah otomatis selagi ada
+    progres (teks/tool baru). Mentok `max_total` (default 4x timeout)
+    atau macet total (tanpa output apa pun > no_output_limit) baru
+    dibilang gagal. /stop selalu bisa motong.
     Watchdog: diam total (tanpa teks/tool) lebih dari no_output_limit
     dianggap macet — stop nunggu, balikin error jelas (user tak staring
     "Thinking…" selamanya).
@@ -719,8 +724,14 @@ def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
     if not user_time:
         user_time = base_max  # fallback: semua yg lama ke-exclude via id juga
     t0 = time.time()
+    if not max_total:
+        max_total = timeout * 4
+    deadline = t0 + timeout
+    grace = min(timeout, 900)  # jeda tanpa progres yg masih ditolerir
+    last_progress = t0
+    prev_sig = None
     last = None
-    while time.time() - t0 < timeout:
+    while True:
         time.sleep(interval)
         if stop_sid and _stopped(stop_sid):
             _stop_consume(stop_sid)
@@ -729,6 +740,10 @@ def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
             st.stopped = True
             return st
         st = parse_messages(messages(sid), user_time, base_ids)
+        sig = (len(st.texts), len(st.tools), len(st.reasoning))
+        if sig != prev_sig:
+            prev_sig = sig
+            last_progress = time.time()
         if on_update and st != last:
             last = st
             try:
@@ -741,18 +756,27 @@ def run_turn(sid: str, prompt: str, on_update=None, timeout: int = 900,
             # done tanpa konten baru = sinyal basi (harusnya tak terjadi
             # berkat baseline) — jangan pulang, tunggu konten beneran.
             st.done = False
+        now = time.time()
         if not st.texts and not st.tools \
-                and time.time() - t0 > min(no_output_limit, timeout):
+                and now - t0 > min(no_output_limit, timeout):
             st = parse_messages(messages(sid), user_time, base_ids)
             if not st.texts and not st.tools and not st.done:
                 st.error = (st.error or
-                            f"model diam {int(time.time() - t0)}s tanpa output "
+                            f"model diam {int(now - t0)}s tanpa output "
                             "(macet/lamban). Coba /retry atau /model lain.")
                 st.done = True
                 return st
+        if now >= deadline:
+            if now - last_progress <= grace and now - t0 < max_total:
+                deadline = now + timeout  # masih progres -> jatah nambah
+                continue
+            break
     st = parse_messages(messages(sid), user_time, base_ids)
+    _spent = int(time.time() - t0)
+    _why = (f"mentok batas {int(max_total)}s" if _spent >= max_total - 1
+            else "tanpa progres")
     st.error = st.error or (
-        f"timeout {int(timeout)}s — server mungkin masih jalan "
-        "(mis. sleep panjang). /retry buat lanjut, /bg buat background.")
+        f"timeout {_spent}s {_why} (macet/lamban). "
+        "/retry buat lanjut, /bg buat background.")
     st.done = True
     return st
